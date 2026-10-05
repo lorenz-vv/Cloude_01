@@ -278,6 +278,20 @@ class TestSchreiben(unittest.TestCase):
         self.assertEqual(rs.aenderungen({"nummer": "a"}, {"nummer": None}), {})
 
 
+class TestEingaben(unittest.TestCase):
+    def test_liste_in_in0(self):
+        e = rs._eingaben_entpacken([["C:/x", True, False]])
+        self.assertEqual(rs._eingabe(e, 0, ""), "C:/x")
+        self.assertEqual(rs._eingabe(e, 1, None), True)
+        self.assertEqual(rs._eingabe(e, 9, "Raum-Nr. "), "Raum-Nr. ")    # fehlt -> Standard
+
+    def test_einzelne_eingaenge(self):
+        e = rs._eingaben_entpacken(["C:/x", True])
+        self.assertEqual(rs._eingabe(e, 0, ""), "C:/x")
+        self.assertEqual(rs._eingabe(e, 5, "Bestand"), "Bestand")
+        self.assertEqual(rs._eingabe([None, ""], 1, "std"), "std")
+
+
 class TestListen(unittest.TestCase):
     def test_csv_roundtrip_und_freigabe(self):
         with tempfile.TemporaryDirectory() as d:

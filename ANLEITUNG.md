@@ -56,33 +56,47 @@ Spaltennamen, die erkannt werden: `FM.OKS`, `FM.NUMMER`, `FM.NAME`, `FM.FLAECHE`
 Ankerpunkt der Verbindungslinie, falls er später mitexportiert wird – wird dann statt des Einfügepunkts
 für den Punkt-in-Raum-Test verwendet.
 
-## 3. Dynamo-Graph aufbauen
+## 3. Dynamo-Graph (.dyn) selbst erstellen – 3 Nodes
 
-Einen **Python Script**-Node (Engine `CPython3`) mit **15 Eingängen** anlegen und den Inhalt von
-`raumstempel_dynamo.py` einfügen. Die Eingänge heißen im Node IN[0] … IN[14]. Ein `.dyn` wurde nicht
-erzeugt (nicht zuverlässig ohne Dynamo prüfbar); der Aufbau ist in 5 Minuten gemacht:
+Revit 2025 → Registerkarte *Verwalten* → **Dynamo** → *Neu*.
 
-| IN  | Dynamo-Node            | Wert                                                     | Standard        |
-|-----|------------------------|----------------------------------------------------------|-----------------|
-| 0   | Directory Path         | Ordner mit den CSV-Dateien                               | –               |
-| 1   | Boolean                | **Trockenlauf** (True = nichts schreiben)                | True            |
-| 2   | Boolean                | Fehlende Räume anlegen                                   | False           |
-| 3   | Code Block (Liste)     | `["G00=EG","G01=1. OG","G02=2. OG","G03=3. OG","G04=4. OG","U01=1. UG"];` | siehe Skript |
-| 4   | String                 | `"m"`                                                    | m               |
-| 5   | String                 | Phase                                                    | Bestand         |
-| 6   | Number                 | Schwelle „sicher“ in %                                   | 5               |
-| 7   | Number                 | Obergrenze Vorschlag in %                                | 15              |
-| 8   | Number                 | max. Abstand Fläche-Zuordnung in m                       | 10              |
-| 9   | String                 | Präfix Raumnummer_Text                                   | `Raum-Nr. `     |
-| 10  | File Path (optional)   | Firmen-Shared-Parameter-Datei                            | leer            |
-| 11  | File Path (optional)   | geprüfte Zuordnungsliste (Lauf 2)                        | leer            |
-| 12  | Directory Path (opt.)  | Ausgabeordner                                            | `<Ordner>/_Ausgabe` |
-| 13  | Code Block (opt.)      | `["Dateiname.dwg=Verknüpfungsname.dwg"];` bei Namensabweichung | leer      |
-| 14  | Boolean                | Parameter bei Bedarf anlegen                             | True            |
+1. **Python-Node:** Suchfeld oben in der Bibliothek: `Python Script` → in den Arbeitsbereich ziehen.
+   Unten am Node die Engine auf **CPython3** stellen. Beim Node sind standardmäßig mehrere Eingänge
+   vorhanden; es wird nur `IN[0]` benutzt (überzählige Eingänge mit „−“ entfernen oder leer lassen).
+   Doppelklick auf den Node → den **kompletten Inhalt** von `raumstempel/raumstempel_dynamo.py`
+   einfügen (vorhandenen Text vorher löschen) → **Änderungen speichern**.
+2. **Code Block:** Doppelklick in den leeren Arbeitsbereich erzeugt einen Code-Block. Diesen Text einfügen
+   und den Ordnerpfad anpassen (Schrägstriche `/` statt `\`):
 
-Den Ausgang mit einem **Watch**-Node verbinden (Protokoll).
-Nicht angeschlossene Eingänge (leer/`null`) nehmen den Standardwert.
-In Dynamo: Ausführung auf **Manuell** stellen und den Lauf gezielt starten.
+   ```
+   [
+     "U:/Dokumente/BIM_CAD/Raumstempel",            // 0  Ordner mit den CSV-Dateien
+     true,                                            // 1  Trockenlauf (true = nichts schreiben)
+     false,                                           // 2  fehlende Räume anlegen
+     ["G00=EG","G01=1. OG","G02=2. OG","G03=3. OG","G04=4. OG","U01=1. UG"],  // 3 Ebenen
+     "m",                                             // 4  Einheit der DWG
+     "Bestand",                                       // 5  Phase
+     5,                                               // 6  Schwelle "sicher" in %
+     15,                                              // 7  Obergrenze Vorschlag in %
+     10,                                              // 8  max. Abstand (Fläche) in m
+     "Raum-Nr. ",                                     // 9  Präfix Raumnummer_Text
+     "",                                              // 10 Firmen-Shared-Parameter-Datei (optional)
+     "",                                              // 11 geprüfte Zuordnungsliste (Lauf 2)
+     "",                                              // 12 Ausgabeordner (leer = <Ordner>/_Ausgabe)
+     [],                                              // 13 manuelle Verknüpfungszuordnung
+     true                                             // 14 Parameter bei Bedarf anlegen
+   ];
+   ```
+3. **Watch-Node** (`Watch`) aus der Bibliothek holen.
+4. Verbinden: Ausgang des Code-Blocks → `IN[0]` des Python-Nodes → Eingang des Watch-Nodes.
+5. Unten links die Ausführung von *Automatisch* auf **Manuell** stellen, dann **Ausführen**.
+6. **Datei → Speichern unter…** → `Raumstempel.dyn`.
+
+Für **Lauf 2** im Code-Block `true` an Position 1 auf `false` ändern und bei Position 11 den Pfad der
+geprüften Zuordnungsliste eintragen, dann erneut ausführen. Danach den Graphen speichern.
+
+Alternativ lassen sich alle 15 Werte auch einzeln über 15 Eingänge verbinden (IN[0] … IN[14]). Dann
+müssen alle Eingänge belegt sein; für „leer“ einen Code-Block mit `null;` oder `"";` verwenden.
 
 ## 4. Ablauf in Revit
 

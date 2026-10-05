@@ -34,6 +34,9 @@ Eingaben (IN[...]) - Reihenfolge im Dynamo-Graph
 13  Manuelle Verknüpfungszuordnung, Liste "Dateiname=Verknüpfungsname" (optional)
 14  Parameter bei Bedarf anlegen                        (True/False, Standard True)
 
+Alternativ können alle 15 Werte als EINE Liste an IN[0] übergeben werden
+(ein Code-Block-Node, siehe ANLEITUNG.md). Leere Werte ("" oder null) = Standard.
+
 Ausgabe (OUT): Liste von Textzeilen (Protokoll) für einen Watch-Node.
 """
 
@@ -560,6 +563,16 @@ def lese_zuordnungsliste(pfad):
 # ---------------------------------------------------------------------------
 # TEIL 2: Revit-Teil (dünn, defensiv). Wird nur in Dynamo ausgeführt.
 # ---------------------------------------------------------------------------
+def _eingaben_entpacken(eingaben):
+    """Erlaubt, alle Eingaben als EINE Liste an IN[0] zu übergeben (ein Code-Block-Node)."""
+    try:
+        if len(eingaben) == 1 and isinstance(eingaben[0], (list, tuple)):
+            return list(eingaben[0])
+    except TypeError:
+        pass
+    return eingaben
+
+
 def _eingabe(eingaben, i, standard):
     try:
         wert = eingaben[i]
@@ -601,6 +614,7 @@ class Protokoll(object):
 def haupt(eingaben):
     """Einstieg aus dem Dynamo-Python-Node. Gibt das Protokoll als Liste zurück."""
     log = Protokoll()
+    eingaben = _eingaben_entpacken(eingaben)
     try:
         _haupt(eingaben, log)
     except Exception as ex:  # nichts darf unkommentiert abbrechen
