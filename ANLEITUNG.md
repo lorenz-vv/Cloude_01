@@ -98,7 +98,7 @@ Revit 2025 → Registerkarte *Verwalten* → **Dynamo** → *Neu*.
 Für **Lauf 2** im Code-Block `true` an Position 1 auf `false` ändern und bei Position 11 den Pfad der
 geprüften Zuordnungsliste eintragen, dann erneut ausführen. Danach den Graphen speichern.
 
-Alternativ lassen sich alle 16 Werte auch einzeln über 15 Eingänge verbinden (IN[0] … IN[14]). Dann
+Alternativ lassen sich alle 16 Werte auch einzeln über 16 Eingänge verbinden (IN[0] … IN[15]). Dann
 müssen alle Eingänge belegt sein; für „leer“ einen Code-Block mit `null;` oder `"";` verwenden.
 
 ## 4. Ablauf in Revit
