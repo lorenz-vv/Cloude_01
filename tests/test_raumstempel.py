@@ -71,6 +71,54 @@ class TestCsv(unittest.TestCase):
         self.assertEqual((st[0].punkt_x, st[0].punkt_y), (5.0, 6.0))
 
 
+class TestExterneReferenzen(unittest.TestCase):
+    ORDNER = os.path.join(HIER, "daten", "alle")
+
+    def test_filter_funktion(self):
+        self.assertTrue(rs.ist_externe_referenz("100049_004_A_G03_Bestand.dwg"))
+        self.assertTrue(rs.ist_externe_referenz("x_BESTAND"))
+        self.assertFalse(rs.ist_externe_referenz("100049_004_A_G03.dwg"))
+        self.assertFalse(rs.ist_externe_referenz("Bestand_G03.dwg"))
+        self.assertFalse(rs.ist_externe_referenz("", "_Bestand"))
+        self.assertFalse(rs.ist_externe_referenz("a_Bestand.dwg", ""))
+
+    def test_alle_geschosse_datei(self):
+        stempel, mel = rs.lese_stempel_ordner(self.ORDNER)
+        self.assertEqual(len(stempel), 156)                  # 214 Zeilen - 58 aus Referenzen
+        self.assertTrue(all("_Bestand" not in s.dateiname for s in stempel))
+        self.assertEqual(len(mel), 1)
+        self.assertIn("58 Zeilen aus externen Referenzen ignoriert", mel[0])
+        je_code = {}
+        for s in stempel:
+            je_code[s.code] = je_code.get(s.code, 0) + 1
+        self.assertEqual(je_code, {"G00": 33, "G01": 31, "G02": 34, "G03": 23, "G04": 2, "U01": 33})
+
+    def test_danach_alles_eindeutig(self):
+        stempel, _ = rs.lese_stempel_ordner(self.ORDNER)
+        self.assertEqual(rs.finde_doppelte({i: s.oks for i, s in enumerate(stempel)}), {})
+        nummern = {s.oks: rs.kurz_nummer(s.oks)[0] for s in stempel}
+        self.assertNotIn(None, nummern.values())
+        self.assertEqual(rs.finde_doppelte(nummern), {})
+
+    def test_ohne_filter_gibt_es_doppelte_oks(self):
+        stempel, mel = rs.lese_stempel_ordner(self.ORDNER, ausschluss_suffix="")
+        self.assertEqual(len(stempel), 214)
+        self.assertEqual(mel, [])
+        self.assertGreater(len(rs.finde_doppelte({i: s.oks for i, s in enumerate(stempel)})), 0)
+
+    def test_ebenenpruefung_mit_realen_codes(self):
+        stempel, _ = rs.lese_stempel_ordner(self.ORDNER)
+        codes = {}
+        for s in stempel:
+            codes[s.code] = codes.get(s.code, 0) + 1
+        zuord = rs.parse_ebenen_zuordnung(rs.STANDARD_EBENEN)
+        # 1. UG, EG, 1. OG, 2. OG, 3. OG modelliert; 4. OG nicht
+        erg = {e["code"]: e for e in rs.pruefe_ebenen(
+            codes, zuord, ["1. UG", "EG", "1. OG", "2. OG", "3. OG", "4. OG"],
+            {"1. UG": 5, "EG": 5, "1. OG": 5, "2. OG": 5, "3. OG": 5})}
+        self.assertEqual([c for c, e in erg.items() if not e["ok"]], ["G04"])
+
+
 class TestNummern(unittest.TestCase):
     def test_kurz_segmente(self):
         self.assertEqual(rs.kurz_nummer("100049-004-A-G01-_15"), ("G01-_15", None))

@@ -33,8 +33,10 @@ Eingaben (IN[...]) - Reihenfolge im Dynamo-Graph
 12  Ausgabeordner für Listen (optional, Standard <Ordner>/_Ausgabe)
 13  Manuelle Verknüpfungszuordnung, Liste "Dateiname=Verknüpfungsname" (optional)
 14  Parameter bei Bedarf anlegen                        (True/False, Standard True)
+15  Ausschluss: Zeilen, deren Dateiname auf diesen Text endet (Standard "_Bestand",
+    externe Referenzen); "-" = nichts ausschließen
 
-Alternativ können alle 15 Werte als EINE Liste an IN[0] übergeben werden
+Alternativ können alle 16 Werte als EINE Liste an IN[0] übergeben werden
 (ein Code-Block-Node, siehe ANLEITUNG.md). Leere Werte ("" oder null) = Standard.
 
 Ausgabe (OUT): Liste von Textzeilen (Protokoll) für einen Watch-Node.
@@ -161,10 +163,30 @@ def _erkenne_trenner(erste_zeile):
     return bester if zaehler[bester] > 0 else ";"
 
 
-def parse_stempel_text(text, quelle=""):
-    """Parst CSV-Text. Gibt (stempel_liste, meldungen) zurück."""
+STANDARD_AUSSCHLUSS_SUFFIX = "_Bestand"
+
+
+def ist_externe_referenz(dateiname, suffix=STANDARD_AUSSCHLUSS_SUFFIX):
+    """True, wenn der Dateiname (ohne .dwg) auf `suffix` endet.
+
+    Solche Zeilen sind Blöcke gleichen Namens aus externen Referenzen
+    (z. B. '100049_004_A_G03_Bestand.dwg') und werden nicht verwendet.
+    """
+    if not suffix:
+        return False
+    name = re.sub(r"\.dwg$", "", (dateiname or "").strip(), flags=re.I).lower()
+    return name.endswith(suffix.strip().lower())
+
+
+def parse_stempel_text(text, quelle="", ausschluss_suffix=STANDARD_AUSSCHLUSS_SUFFIX):
+    """Parst CSV-Text. Gibt (stempel_liste, meldungen) zurück.
+
+    Zeilen aus externen Referenzen (Dateiname endet auf `ausschluss_suffix`)
+    werden übersprungen und in einer Sammelmeldung gezählt.
+    """
     meldungen = []
     stempel = []
+    ignoriert = {}
     text = text.lstrip("﻿")
     zeilen = text.splitlines()
     if not zeilen:
@@ -200,6 +222,10 @@ def parse_stempel_text(text, quelle=""):
         if not oks:
             meldungen.append("%s Zeile %d: keine OKS, übersprungen." % (quelle, nr))
             continue
+        dateiname = feld(zeile, "dateiname").strip()
+        if ist_externe_referenz(dateiname, ausschluss_suffix):
+            ignoriert[dateiname] = ignoriert.get(dateiname, 0) + 1
+            continue
         x = parse_zahl(feld(zeile, "x"))
         y = parse_zahl(feld(zeile, "y"))
         if x is None or y is None:
@@ -214,12 +240,16 @@ def parse_stempel_text(text, quelle=""):
             x=x, y=y,
             ziel_x=parse_zahl(feld(zeile, "ziel_x")),
             ziel_y=parse_zahl(feld(zeile, "ziel_y")),
-            dateiname=feld(zeile, "dateiname").strip(),
+            dateiname=dateiname,
             quelle=quelle, zeile=nr))
+    if ignoriert:
+        meldungen.append("%s: %d Zeilen aus externen Referenzen ignoriert (%s)."
+                         % (quelle, sum(ignoriert.values()),
+                            ", ".join("%s: %d" % (k, v) for k, v in sorted(ignoriert.items()))))
     return stempel, meldungen
 
 
-def lese_stempel_ordner(ordner):
+def lese_stempel_ordner(ordner, ausschluss_suffix=STANDARD_AUSSCHLUSS_SUFFIX):
     """Liest alle *.csv im Ordner (nicht rekursiv). Gibt (stempel, meldungen)."""
     dateien = sorted(glob.glob(os.path.join(ordner, "*.csv")))
     alle, meldungen = [], []
@@ -229,7 +259,7 @@ def lese_stempel_ordner(ordner):
         name = os.path.basename(pfad)
         with open(pfad, "rb") as f:
             text = dekodiere(f.read())
-        st, mel = parse_stempel_text(text, quelle=name)
+        st, mel = parse_stempel_text(text, quelle=name, ausschluss_suffix=ausschluss_suffix)
         alle.extend(st)
         meldungen.extend(mel)
     return alle, meldungen
@@ -656,6 +686,9 @@ def _haupt(eingaben, log):
             k, v = str(z).split("=", 1)
             manuelle_links[_norm_dwgname(k)] = _norm_dwgname(v)
     parameter_anlegen = bool(_eingabe(eingaben, 14, True))
+    ausschluss_suffix = str(_eingabe(eingaben, 15, STANDARD_AUSSCHLUSS_SUFFIX))
+    if ausschluss_suffix.strip().lower() in ("-", "keine"):
+        ausschluss_suffix = ""
 
     zeit = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     log.kopf("Raumstempel -> Revit-Räume  (%s)" % zeit)
@@ -685,7 +718,7 @@ def _haupt(eingaben, log):
     # --- Stempel lesen -------------------------------------------------------
     if not ordner or not os.path.isdir(ordner):
         raise ValueError("Ordner mit CSV-Dateien nicht gefunden: '%s'" % ordner)
-    stempel, mel = lese_stempel_ordner(ordner)
+    stempel, mel = lese_stempel_ordner(ordner, ausschluss_suffix)
     for m in mel:
         log("Hinweis: " + m)
         pruef("Einlesen", detail=m)

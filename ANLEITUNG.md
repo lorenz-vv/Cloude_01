@@ -9,7 +9,9 @@ Datei: `raumstempel/raumstempel_dynamo.py` (Inhalt in einen Python-Script-Node k
 
 ## 1. Was das Skript tut
 
-* Liest alle `*.csv` eines Ordners (je Geschoss eine Datei, auch gemischt möglich).
+* Liest alle `*.csv` eines Ordners (je Geschoss eine Datei **oder eine Datei für alle Geschosse**).
+* **Ignoriert Zeilen aus externen Referenzen:** Ist der `Dateiname` einer Zeile `…_Bestand.dwg`
+  (z. B. `100049_004_A_G03_Bestand.dwg`), wird sie nicht verwendet. Das Suffix ist in Eingabe 15 änderbar.
 * Ordnet jeden Stempel über den **Geschosscode in der OKS** einer Revit-Ebene zu
   (`G00` = EG, `G01` = 1. OG, `G02` = 2. OG, `G03` = 3. OG, `G04` = 4. OG, `U01` = 1. UG).
   Ebenen **ohne Räume** (nicht modelliert) oder ohne Zuordnung werden übersprungen und gemeldet.
@@ -84,7 +86,8 @@ Revit 2025 → Registerkarte *Verwalten* → **Dynamo** → *Neu*.
      "",                                              // 11 geprüfte Zuordnungsliste (Lauf 2)
      "",                                              // 12 Ausgabeordner (leer = <Ordner>/_Ausgabe)
      [],                                              // 13 manuelle Verknüpfungszuordnung
-     true                                             // 14 Parameter bei Bedarf anlegen
+     true,                                            // 14 Parameter bei Bedarf anlegen
+     "_Bestand"                                       // 15 Zeilen mit diesem Dateinamen-Ende ignorieren ("-" = keine)
    ];
    ```
 3. **Watch-Node** (`Watch`) aus der Bibliothek holen.
@@ -95,7 +98,7 @@ Revit 2025 → Registerkarte *Verwalten* → **Dynamo** → *Neu*.
 Für **Lauf 2** im Code-Block `true` an Position 1 auf `false` ändern und bei Position 11 den Pfad der
 geprüften Zuordnungsliste eintragen, dann erneut ausführen. Danach den Graphen speichern.
 
-Alternativ lassen sich alle 15 Werte auch einzeln über 15 Eingänge verbinden (IN[0] … IN[14]). Dann
+Alternativ lassen sich alle 16 Werte auch einzeln über 15 Eingänge verbinden (IN[0] … IN[14]). Dann
 müssen alle Eingänge belegt sein; für „leer“ einen Code-Block mit `null;` oder `"";` verwenden.
 
 ## 4. Ablauf in Revit
