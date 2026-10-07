@@ -1049,7 +1049,24 @@ def _sammle_verknuepfungen(doc, DB):
     verknüpfte zuerst. Nichts wird still verschluckt: Fehler landen in diagnose.
     """
     liste, fehler, n_inst, n_verkn = [], [], 0, 0
-    for inst in DB.FilteredElementCollector(doc).OfClass(DB.ImportInstance):
+    instanzen = []
+    try:
+        instanzen = list(DB.FilteredElementCollector(doc).OfClass(DB.ImportInstance))
+    except Exception as ex:
+        fehler.append("OfClass(ImportInstance): %s" % ex)
+    weg = "Sammler"
+    if not instanzen:
+        # zweiter Suchweg: über die CAD-Verknüpfungstypen und ihre abhängigen Instanzen
+        try:
+            for t in DB.FilteredElementCollector(doc).OfClass(DB.CADLinkType):
+                for eid in t.GetDependentElements(DB.ElementClassFilter(DB.ImportInstance)):
+                    el = doc.GetElement(eid)
+                    if el is not None and isinstance(el, DB.ImportInstance):
+                        instanzen.append(el)
+            weg = "Verknüpfungstypen"
+        except Exception as ex:
+            fehler.append("Suche über CADLinkType: %s" % ex)
+    for inst in instanzen:
         n_inst += 1
         try:
             verknuepft = bool(inst.IsLinked)
@@ -1078,7 +1095,8 @@ def _sammle_verknuepfungen(doc, DB):
         typen = [t.Name for t in DB.FilteredElementCollector(doc).OfClass(DB.CADLinkType)]
     except Exception as ex:
         fehler.append("CADLinkType: %s" % ex)
-    return liste, {"instanzen": n_inst, "verknuepft": n_verkn, "typen": typen, "fehler": fehler}
+    return liste, {"instanzen": n_inst, "verknuepft": n_verkn, "typen": typen, "fehler": fehler,
+                   "weg": weg}
 
 
 def _finde_trafo(doc, DB, stempel_ebene, ebene, manuelle_links, suffix, log, pruef):
@@ -1110,15 +1128,18 @@ def _finde_trafo(doc, DB, stempel_ebene, ebene, manuelle_links, suffix, log, pru
         else:
             gesucht = ", ".join(sorted({norm_dwgname(d) for d in dateinamen})) or "?"
             log("FEHLER: Keine passende DWG-Verknüpfung zu %s gefunden (gesucht auch mit '%s')." % (gesucht, suffix))
-            log("  CAD-Instanzen im Modell: %d (verknüpft: %d, importiert: %d)."
-                % (diag["instanzen"], diag["verknuepft"], diag["instanzen"] - diag["verknuepft"]))
+            log("  CAD-Instanzen im Modell: %d (verknüpft: %d, importiert: %d), gefunden über: %s."
+                % (diag["instanzen"], diag["verknuepft"], diag["instanzen"] - diag["verknuepft"], diag["weg"]))
             log("  Namen: %s" % (", ".join(sorted({r for _n, _i, _v, r in verknuepfungen})) or "keine"))
             log("  CAD-Verknüpfungstypen: %s" % (", ".join(sorted(diag["typen"])) or "keine"))
             for f in diag["fehler"][:5]:
                 log("  Fehler beim Lesen: %s" % f)
-            if diag["instanzen"] == 0:
-                log("  -> Das Modell enthält keine DWG. Verknüpfe sie in Revit (Einfügen > CAD verknüpfen, "
-                    "Positionierung wie beim Modellieren). DWG-Dateien im Projektordner allein genügen nicht.")
+            if diag["instanzen"] == 0 and diag["typen"]:
+                log("  -> Es gibt CAD-Verknüpfungstypen, aber keine platzierte Instanz. Ist die Verknüpfung "
+                    "geladen und in einer Ansicht/auf einer Ebene platziert (nicht nur 'ausgeblendet/entfernt')?")
+            elif diag["instanzen"] == 0:
+                log("  -> Das Modell enthält keine DWG. Verknüpfe sie in Revit (Einfügen > CAD verknüpfen). "
+                    "DWG-Dateien im Projektordner allein genügen nicht.")
             else:
                 log("  -> Namen passen nicht: trage die Zuordnung in Eingabe 13 ein "
                     "(['Dateiname.dwg=Name aus der Liste oben']).")
