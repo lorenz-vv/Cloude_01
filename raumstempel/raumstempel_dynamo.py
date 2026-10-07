@@ -298,6 +298,38 @@ def kurz_nummer(oks, modus="segmente", laenge=7):
     return nummer, None
 
 
+def bereinige_doppelte(stempel):
+    """Trennt Doppelte nach OKS.
+
+    Identische Stempel (gleicher Name, gleiche Nummer/Fläche/Position - z. B. dieselbe
+    CSV zweimal im Ordner) werden auf einen reduziert. Widersprüchliche Stempel mit
+    gleicher OKS werden NICHT verarbeitet.
+    Rückgabe: (liste, identisch_entfernt, konflikte)
+      liste               Stempel ohne Doppelte und ohne Konflikte
+      identisch_entfernt  Liste der entfernten identischen Kopien
+      konflikte           dict oks -> [Stempel, ...]
+    """
+    gruppen, reihenfolge = {}, []
+    for s in stempel:
+        if s.oks not in gruppen:
+            gruppen[s.oks] = []
+            reihenfolge.append(s.oks)
+        gruppen[s.oks].append(s)
+
+    def signatur(s):
+        return (s.name.strip(), s.nummer.strip(), s.flaeche, round(s.x, 3), round(s.y, 3))
+
+    liste, entfernt, konflikte = [], [], {}
+    for oks in reihenfolge:
+        g = gruppen[oks]
+        if len({signatur(s) for s in g}) == 1:
+            liste.append(g[0])
+            entfernt.extend(g[1:])
+        else:
+            konflikte[oks] = g
+    return liste, entfernt, konflikte
+
+
 def finde_doppelte(werte):
     """werte: dict schluessel -> wert. Gibt dict wert -> [schluessel] mit Duplikaten."""
     gruppen = {}
@@ -782,18 +814,23 @@ def _haupt(eingaben, log):
         pruef("Ebene nicht verarbeitet", ebene=code or "", detail=msg)
     log("%d Stempel aus %s gelesen." % (len(stempel), ordner))
 
-    # doppelte OKS: nicht verarbeiten, melden
-    doppelt = finde_doppelte({i: s.oks for i, s in enumerate(stempel)})
-    ausschluss = set()
-    for oks, idx in doppelt.items():
-        for i in idx:
-            ausschluss.add(i)
-            pruef("Doppelte OKS", oks=oks, name=stempel[i].name, nummer=stempel[i].nummer,
-                  detail="OKS kommt %d-mal vor (%s Zeile %d) - nicht verarbeitet"
-                         % (len(idx), stempel[i].quelle, stempel[i].zeile))
-    stempel_liste = [s for i, s in enumerate(stempel) if i not in ausschluss]
-    if ausschluss:
-        log("ACHTUNG: %d Stempel mit doppelter OKS ausgeschlossen." % len(ausschluss))
+    # doppelte OKS: identische Kopien reduzieren, widersprüchliche nicht verarbeiten
+    stempel_liste, identisch, konflikte = bereinige_doppelte(stempel)
+    if identisch:
+        quellen = sorted({x.quelle for x in identisch})
+        log("Hinweis: %d identische Stempel mehrfach vorhanden (CSV-Dateien: %s) - je einmal verwendet. "
+            "Tipp: Nicht benötigte CSV-Dateien aus dem Ordner nehmen."
+            % (len(identisch), ", ".join(quellen)))
+        pruef("Doppelte OKS (identisch)", detail="%d identische Kopien entfernt (%s)"
+              % (len(identisch), ", ".join(quellen)))
+    for oks, g in konflikte.items():
+        for x in g:
+            pruef("Doppelte OKS", oks=oks, name=x.name, nummer=x.nummer,
+                  detail="OKS %d-mal mit unterschiedlichen Werten (%s Zeile %d) - nicht verarbeitet"
+                         % (len(g), x.quelle, x.zeile))
+    if konflikte:
+        log("ACHTUNG: %d OKS kommen mit widersprüchlichen Werten mehrfach vor - nicht verarbeitet."
+            % len(konflikte))
 
     # --- Revit-Räume (nur Phase) ---------------------------------------------
     raeume_info, phasen = _sammle_raeume(doc, DB, phase_name)
@@ -1005,37 +1042,86 @@ def _sammle_raeume(doc, DB, phase_name):
     return ergebnis, phasen
 
 
+def _sammle_verknuepfungen(doc, DB):
+    """Alle CAD-Instanzen des Modells (verknüpft oder importiert) mit normalisierten Namen.
+
+    Gibt (liste, diagnose) zurück. liste: [(name_norm, instanz, verknuepft, rohname)],
+    verknüpfte zuerst. Nichts wird still verschluckt: Fehler landen in diagnose.
+    """
+    liste, fehler, n_inst, n_verkn = [], [], 0, 0
+    for inst in DB.FilteredElementCollector(doc).OfClass(DB.ImportInstance):
+        n_inst += 1
+        try:
+            verknuepft = bool(inst.IsLinked)
+        except Exception as ex:
+            verknuepft, _ = False, fehler.append("IsLinked: %s" % ex)
+        n_verkn += 1 if verknuepft else 0
+        namen = []
+        try:
+            typ = doc.GetElement(inst.GetTypeId())
+            if typ is not None:
+                namen.append(typ.Name)
+        except Exception as ex:
+            fehler.append("Typname: %s" % ex)
+        try:
+            if inst.Category is not None:
+                namen.append(inst.Category.Name)
+        except Exception as ex:
+            fehler.append("Kategoriename: %s" % ex)
+        for roh in namen:
+            n = norm_dwgname(roh)
+            if n:
+                liste.append((n, inst, verknuepft, roh))
+    liste.sort(key=lambda e: not e[2])
+    typen = []
+    try:
+        typen = [t.Name for t in DB.FilteredElementCollector(doc).OfClass(DB.CADLinkType)]
+    except Exception as ex:
+        fehler.append("CADLinkType: %s" % ex)
+    return liste, {"instanzen": n_inst, "verknuepft": n_verkn, "typen": typen, "fehler": fehler}
+
+
 def _finde_trafo(doc, DB, stempel_ebene, ebene, manuelle_links, suffix, log, pruef):
     """Sucht die DWG-Verknüpfung und liefert ihre Transformation.
 
     Die Stempel kommen aus '<Geschoss>.dwg', in Revit ist '<Geschoss>_Bestand.dwg'
     verknüpft: gleicher Nullpunkt und gleiche Einheiten, daher wird deren
     Transformation benutzt (siehe kandidaten_linknamen).
+    Die DWG-Dateien müssen IN REVIT verknüpft sein (Einfügen > CAD verknüpfen);
+    Dateien im Projektordner allein genügen nicht.
     """
     dateinamen = [s.dateiname for s in stempel_ebene if s.dateiname]
-    instanzen = list(DB.FilteredElementCollector(doc).OfClass(DB.ImportInstance))
-    verknuepfungen = []
-    for inst in instanzen:
-        try:
-            if not inst.IsLinked:
-                continue
-            typ = doc.GetElement(inst.GetTypeId())
-            verknuepfungen.append((norm_dwgname(typ.Name), inst))
-        except Exception:
-            continue
-    name, hinweis = waehle_verknuepfung(dateinamen, [n for n, _ in verknuepfungen], suffix, manuelle_links)
-    gefunden = [i for (nm, i) in verknuepfungen if name is not None and nm == name]
+    verknuepfungen, diag = _sammle_verknuepfungen(doc, DB)
+    name, hinweis = waehle_verknuepfung(dateinamen, [n for n, _i, _v, _r in verknuepfungen],
+                                        suffix, manuelle_links)
+    gefunden = []
+    seen = set()
+    for nm, i_, _v, _r in verknuepfungen:
+        if name is not None and nm == norm_dwgname(name) and _eid(i_.Id) not in seen:
+            seen.add(_eid(i_.Id))
+            gefunden.append(i_)
     if hinweis:
         log("Hinweis: " + hinweis)
     if not gefunden:
-        if len(verknuepfungen) == 1:
+        eindeutig = {_eid(i_.Id): n for n, i_, _v, _r in verknuepfungen}
+        if len(eindeutig) == 1:
             gefunden = [verknuepfungen[0][1]]
-            log("Keine Namensübereinstimmung, nehme die einzige DWG-Verknüpfung (%s)." % verknuepfungen[0][0])
+            log("Keine Namensübereinstimmung, nehme die einzige CAD-Instanz im Modell (%s)." % verknuepfungen[0][3])
         else:
-            log("FEHLER: Keine DWG-Verknüpfung zu %s gefunden (gesucht auch mit '%s'). Vorhandene: %s. "
-                "Zuordnung per Eingabe 13 ('Dateiname=Verknüpfungsname')."
-                % (", ".join(sorted({norm_dwgname(d) for d in dateinamen})) or "?", suffix,
-                   ", ".join(sorted(n for n, _ in verknuepfungen)) or "keine"))
+            gesucht = ", ".join(sorted({norm_dwgname(d) for d in dateinamen})) or "?"
+            log("FEHLER: Keine passende DWG-Verknüpfung zu %s gefunden (gesucht auch mit '%s')." % (gesucht, suffix))
+            log("  CAD-Instanzen im Modell: %d (verknüpft: %d, importiert: %d)."
+                % (diag["instanzen"], diag["verknuepft"], diag["instanzen"] - diag["verknuepft"]))
+            log("  Namen: %s" % (", ".join(sorted({r for _n, _i, _v, r in verknuepfungen})) or "keine"))
+            log("  CAD-Verknüpfungstypen: %s" % (", ".join(sorted(diag["typen"])) or "keine"))
+            for f in diag["fehler"][:5]:
+                log("  Fehler beim Lesen: %s" % f)
+            if diag["instanzen"] == 0:
+                log("  -> Das Modell enthält keine DWG. Verknüpfe sie in Revit (Einfügen > CAD verknüpfen, "
+                    "Positionierung wie beim Modellieren). DWG-Dateien im Projektordner allein genügen nicht.")
+            else:
+                log("  -> Namen passen nicht: trage die Zuordnung in Eingabe 13 ein "
+                    "(['Dateiname.dwg=Name aus der Liste oben']).")
             return None
     inst = gefunden[0]
     if len(gefunden) > 1:

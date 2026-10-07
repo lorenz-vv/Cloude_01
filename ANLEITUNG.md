@@ -45,6 +45,20 @@ der Stempel aus `…_G03.dwg` mit der Transformation (Versatz/Drehung) der Revit
 (Stempel dort mit anderem Block/Attributen), meldet das Skript „Geschoss … nur Zeilen aus externen
 Referenzen“ und verarbeitet es nicht.
 
+### Wichtig: DWG müssen in Revit verknüpft sein
+
+Das Skript liest **keine DWG-Dateien von der Festplatte**. Es nimmt nur CAD-Verknüpfungen, die im
+Revit-Modell vorhanden sind (*Einfügen → CAD verknüpfen*; Kontrolle unter *Verwalten → Verknüpfungen
+verwalten → CAD-Formate*). DWG-Dateien im Projektordner genügen nicht. Fehlt die Verknüpfung, schreibt
+das Protokoll „CAD-Instanzen im Modell: 0 …“ bzw. die Namen, die es gefunden hat.
+
+### Mehrere CSV im Ordner
+
+Alle `*.csv` des Ordners werden gelesen. Liegen dieselben Stempel in zwei Dateien (z. B. eine verkleinerte
+Testdatei und die volle Datei), wird jeder identische Stempel **einmal** verwendet (Hinweis im Protokoll).
+Nur **widersprüchliche** Doppelte (gleiche OKS, andere Werte) werden nicht verarbeitet. Besser: nicht
+benötigte CSV-Dateien aus dem Ordner nehmen.
+
 ### Geschriebene Parameter
 
 | Quelle (CSV)   | Revit-Raumparameter                         | Beispiel                |

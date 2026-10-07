@@ -119,6 +119,43 @@ class TestExterneReferenzen(unittest.TestCase):
         self.assertEqual([c for c, e in erg.items() if not e["ok"]], ["G04"])
 
 
+class TestDoppelte(unittest.TestCase):
+    def _s(self, oks, name="Büro", x=1.0, y=2.0, fl=10.0, nr="1.01", quelle="a.csv"):
+        return rs.Stempel(oks, nummer=nr, name=name, flaeche=fl, x=x, y=y, quelle=quelle)
+
+    def test_identische_kopien_werden_einmal_verwendet(self):
+        a = [self._s("A-G01-_1", quelle="Test.csv"), self._s("A-G01-_2", quelle="Test.csv")]
+        b = [self._s("A-G01-_1", quelle="Test_voll.csv"), self._s("A-G01-_2", quelle="Test_voll.csv")]
+        liste, entfernt, konflikte = rs.bereinige_doppelte(a + b)
+        self.assertEqual([s.oks for s in liste], ["A-G01-_1", "A-G01-_2"])
+        self.assertEqual(len(entfernt), 2)
+        self.assertEqual(konflikte, {})
+        self.assertEqual({s.quelle for s in entfernt}, {"Test_voll.csv"})
+
+    def test_widerspruechliche_werden_nicht_verarbeitet(self):
+        liste, entfernt, konflikte = rs.bereinige_doppelte(
+            [self._s("A-G01-_1"), self._s("A-G01-_1", name="Flur"), self._s("A-G01-_2")])
+        self.assertEqual([s.oks for s in liste], ["A-G01-_2"])
+        self.assertEqual(list(konflikte), ["A-G01-_1"])
+        self.assertEqual(entfernt, [])
+
+    def test_leerzeichen_und_kleine_positionsabweichung_gelten_als_identisch(self):
+        liste, entfernt, _ = rs.bereinige_doppelte(
+            [self._s("A-G01-_1", name="Büro "), self._s("A-G01-_1", name="Büro", x=1.0001)])
+        self.assertEqual(len(liste), 1)
+        self.assertEqual(len(entfernt), 1)
+
+    def test_zwei_csv_mit_gleichem_inhalt_im_ordner(self):
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("Test.csv", "Test_voll.csv"):
+                with open(os.path.join(d, name), "wb") as f:
+                    f.write(open(BEISPIEL_CSV, "rb").read())
+            stempel, _ = rs.lese_stempel_ordner(d)
+            self.assertEqual(len(stempel), 46)
+            liste, entfernt, konflikte = rs.bereinige_doppelte(stempel)
+            self.assertEqual((len(liste), len(entfernt), konflikte), (23, 23, {}))
+
+
 class TestVerknuepfung(unittest.TestCase):
     """Stempel aus '<G>.dwg', verknüpft ist in Revit '<G>_Bestand.dwg'."""
 
