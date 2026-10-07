@@ -9,7 +9,7 @@ Datei: `raumstempel/raumstempel_dynamo.py` (Inhalt in einen Python-Script-Node k
 
 ## 1. Was das Skript tut
 
-* Liest alle `*.csv` eines Ordners (je Geschoss eine Datei **oder eine Datei für alle Geschosse**).
+* Liest alle `*.csv` und `*.xlsx` eines Ordners (je Geschoss eine Datei **oder eine Datei für alle Geschosse**).
 * **Raumname:** wird unverändert aus der CSV übernommen (auch `n.v.`), nur Leerzeichen am Rand entfallen.
 * **Ignoriert Zeilen aus externen Referenzen:** Ist der `Dateiname` einer Zeile `…_Bestand.dwg`
   (z. B. `100049_004_A_G03_Bestand.dwg`), wird sie nicht verwendet. Das Suffix ist in Eingabe 15 änderbar.
@@ -52,24 +52,32 @@ Revit-Modell vorhanden sind (*Einfügen → CAD verknüpfen*; Kontrolle unter *V
 verwalten → CAD-Formate*). DWG-Dateien im Projektordner genügen nicht. Fehlt die Verknüpfung, schreibt
 das Protokoll „CAD-Instanzen im Modell: 0 …“ bzw. die Namen, die es gefunden hat.
 
-### Zuordnungsliste in Excel bearbeiten
+### Ausgabelisten als Excel-Datei (Standard)
 
-* Das Skript schreibt Nummern wie `1.06` als `="1.06"` und Flächen mit Dezimalkomma. Dadurch zeigt
-  deutsches Excel sie beim Öffnen per Doppelklick als Text bzw. Zahl und **nicht** als Datum.
-* Bearbeiten musst du nur die Spalten **Freigabe** (`J`/`N`) und bei Bedarf **Raum_ID**.
-* **Lauf 2 liest Name und Nummer der Stempel nicht aus der Liste**, sondern aus den Original-CSV-Dateien
-  (Ordner in Eingabe 0). Aus der Liste kommen nur OKS → Raum_ID und die Freigabe. Eine in Excel
-  verfälschte Spalte (z. B. Datum statt `1.06`) richtet also keinen Schaden an.
-* Speichern: *Datei → Speichern unter → CSV (Trennzeichen-getrennt)* oder einfach als `.csv` belassen.
-* Für ältere Listen (mit Datumsproblemen): *Daten → Aus Text/CSV*, Dateiursprung UTF-8, Trennzeichen
-  Semikolon, Datentyperkennung **„Nicht erkennen“**, dann *Laden*.
+* Das Skript schreibt `Zuordnungsliste_<Zeit>.xlsx` und `Pruefliste_<Zeit>.xlsx` in den Ausgabeordner.
+  Texte (z. B. Raumnummer `1.06`) stehen als **Text**, Zahlen als Zahlen. Es gibt **keine Datumsprobleme**
+  mehr. Kopfzeile fixiert, Filter gesetzt, Spalten angepasst, „unsichere“ Zeilen hellgelb, in der Spalte
+  **Freigabe** eine Auswahlliste `J`/`N`.
+* Eingabe 16 (Ausgabeformat): `"xlsx"` (Standard), `"csv"` oder `"beides"`. Die CSV-Variante schreibt
+  Nummern als `="1.06"` und Flächen mit Dezimalkomma (öffnet ebenfalls ohne Datumsproblem).
+* Bearbeiten musst du nur die Spalten **Freigabe** (`J`/`N`) und bei Bedarf **Raum_ID**. Normal
+  speichern (`.xlsx`).
+* **Lauf 2** (Eingabe 11) nimmt die Liste als `.xlsx` **oder** `.csv`. Aus der Liste kommen nur
+  OKS → Raum_ID und die Freigabe. **Name und Nummer der Stempel** liest das Skript aus den
+  Original-Stempeldateien (Ordner in Eingabe 0). Eine verfälschte Spalte richtet also keinen Schaden an.
+* Die Datei darf beim Lauf nicht in Excel geöffnet sein (Schreibfehler → das Skript weicht dann auf
+  Dokumente/Temp aus und meldet das).
+* Ältere CSV-Listen mit Datumsproblemen: *Daten → Aus Text/CSV*, UTF-8, Semikolon, Datentyperkennung
+  **„Nicht erkennen“**.
 
-### Mehrere CSV im Ordner
+### Mehrere Dateien im Ordner
 
-Alle `*.csv` des Ordners werden gelesen. Liegen dieselben Stempel in zwei Dateien (z. B. eine verkleinerte
-Testdatei und die volle Datei), wird jeder identische Stempel **einmal** verwendet (Hinweis im Protokoll).
-Nur **widersprüchliche** Doppelte (gleiche OKS, andere Werte) werden nicht verarbeitet. Besser: nicht
-benötigte CSV-Dateien aus dem Ordner nehmen.
+Alle `*.csv` **und `*.xlsx`** des Ordners werden als Stempeldateien gelesen (die AutoCAD-Datenextraktion
+kann beides ausgeben). `Zuordnungsliste_*`, `Pruefliste_*` und Excel-Sperrdateien (`~$…`) werden
+übersprungen. Liegen dieselben Stempel in zwei Dateien (z. B. eine verkleinerte Testdatei und die volle
+Datei), wird jeder identische Stempel **einmal** verwendet (Hinweis im Protokoll). Nur **widersprüchliche**
+Doppelte (gleiche OKS, andere Werte) werden nicht verarbeitet. Besser: nicht benötigte Dateien aus dem
+Ordner nehmen.
 
 ### Geschriebene Parameter
 
@@ -129,7 +137,8 @@ Revit 2025 → Registerkarte *Verwalten* → **Dynamo** → *Neu*.
      "",                                              // 12 Ausgabeordner (leer = <Ordner>/_Ausgabe)
      [],                                              // 13 manuelle Verknüpfungszuordnung
      true,                                            // 14 Parameter bei Bedarf anlegen
-     "_Bestand"                                       // 15 Zeilen mit diesem Dateinamen-Ende ignorieren ("-" = keine)
+     "_Bestand",                                      // 15 Zeilen mit diesem Dateinamen-Ende ignorieren ("-" = keine)
+     "xlsx"                                           // 16 Ausgabeformat der Listen: "xlsx", "csv" oder "beides"
    ];
    ```
 3. **Watch-Node** (`Watch`) aus der Bibliothek holen.
@@ -140,7 +149,7 @@ Revit 2025 → Registerkarte *Verwalten* → **Dynamo** → *Neu*.
 Für **Lauf 2** im Code-Block `true` an Position 1 auf `false` ändern und bei Position 11 den Pfad der
 geprüften Zuordnungsliste eintragen, dann erneut ausführen. Danach den Graphen speichern.
 
-Alternativ lassen sich alle 16 Werte auch einzeln über 16 Eingänge verbinden (IN[0] … IN[15]). Dann
+Alternativ lassen sich alle 17 Werte auch einzeln über 17 Eingänge verbinden (IN[0] … IN[16]). Dann
 müssen alle Eingänge belegt sein; für „leer“ einen Code-Block mit `null;` oder `"";` verwenden.
 
 ## 4. Ablauf in Revit
@@ -148,10 +157,10 @@ müssen alle Eingänge belegt sein; für „leer“ einen Code-Block mit `null;`
 1. Räume der Phase **Bestand** vorher mit „Alle Räume automatisch platzieren“ erzeugen und kontrollieren
    (das Skript legt standardmäßig keine Räume an).
 2. DWG-Verknüpfungen müssen im Projekt vorhanden sein (Name = Dateiname der CSV-Spalte `Dateiname`).
-3. **Lauf 1:** Trockenlauf = True. Protokoll, `Zuordnungsliste_*.csv` und `Pruefliste_*.csv` im
+3. **Lauf 1:** Trockenlauf = True. Protokoll, `Zuordnungsliste_*.xlsx` und `Pruefliste_*.xlsx` im
    Ausgabeordner ansehen. Trefferquote beachten (niedrig ⇒ Versatz/Einheit/Verknüpfung).
 4. Zuordnungsliste in Excel prüfen. Spalte **Freigabe** auf `J` (schreiben) oder `N` setzen,
-   bei Bedarf `Raum_ID` korrigieren. Als CSV (Semikolon) speichern.
+   bei Bedarf `Raum_ID` korrigieren. Speichern, Excel schließen.
 5. **Lauf 2:** Pfad der Liste in IN[11], Trockenlauf = False. Geschrieben wird in **einer Transaktion**,
    nur bei geänderten Werten (mehrfach ausführbar). Fehlen `RaumOKS`/`Raumnummer_Text`, werden sie
    gebunden – bevorzugt aus der Firmen-Datei (IN[10] bzw. aktuell in Revit eingestellte Datei);

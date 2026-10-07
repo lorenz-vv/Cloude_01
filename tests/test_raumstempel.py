@@ -147,9 +147,11 @@ class TestDoppelte(unittest.TestCase):
 
     def test_zwei_csv_mit_gleichem_inhalt_im_ordner(self):
         with tempfile.TemporaryDirectory() as d:
+            with open(BEISPIEL_CSV, "rb") as quelle:
+                inhalt = quelle.read()
             for name in ("Test.csv", "Test_voll.csv"):
                 with open(os.path.join(d, name), "wb") as f:
-                    f.write(open(BEISPIEL_CSV, "rb").read())
+                    f.write(inhalt)
             stempel, _ = rs.lese_stempel_ordner(d)
             self.assertEqual(len(stempel), 46)
             liste, entfernt, konflikte = rs.bereinige_doppelte(stempel)
@@ -508,6 +510,130 @@ class TestExcelFreundlich(unittest.TestCase):
         self.assertEqual((s.nummer, s.name, quelle), ("2.5", "Flur", "liste"))
 
 
+class TestXlsx(unittest.TestCase):
+    SPALTEN = ["Ebene", "OKS", "Stempel_Nummer", "Stempel_Name", "Raum_ID", "Raum_Flaeche",
+               "Abweichung_Prozent", "Status", "Freigabe", "Bemerkung"]
+    ZEILEN = [
+        {"Ebene": "EG- OK FFB", "OKS": "A-G00-_01", "Stempel_Nummer": "1.06", "Stempel_Name": "Büro & <Co>",
+         "Raum_ID": 3258026, "Raum_Flaeche": 17.64, "Abweichung_Prozent": 1.2, "Status": "sicher",
+         "Freigabe": "J", "Bemerkung": ""},
+        {"Ebene": "EG- OK FFB", "OKS": "A-G00-_02", "Stempel_Nummer": "n.v.", "Stempel_Name": 'Flur "1"',
+         "Raum_ID": 3258027, "Raum_Flaeche": 3.0, "Abweichung_Prozent": None, "Status": "unsicher",
+         "Freigabe": "N", "Bemerkung": "zwei\nZeilen"},
+        {"Ebene": "EG- OK FFB", "OKS": "A-G00-_03", "Stempel_Nummer": "4.06b", "Stempel_Name": "ä",
+         "Raum_ID": 3258028, "Raum_Flaeche": 1.25, "Abweichung_Prozent": 6.5, "Status": "unsicher",
+         "Freigabe": "N", "Bemerkung": "x"},
+    ]
+
+    def _schreibe(self, d):
+        pfad = os.path.join(d, "unter", "z.xlsx")
+        rs.schreibe_xlsx(pfad, "Zuordnung", self.SPALTEN, self.ZEILEN,
+                         rs.ZUORDNUNG_ZAHLENFORMAT, "Freigabe", lambda z: z["Status"] == "unsicher")
+        return pfad
+
+    def test_rundlauf_eigener_leser(self):
+        with tempfile.TemporaryDirectory() as d:
+            tab = rs.lese_xlsx(self._schreibe(d))
+        self.assertEqual(tab[0], self.SPALTEN)
+        self.assertEqual(len(tab), 4)
+        self.assertEqual(tab[1][2], "1.06")                       # bleibt Text, kein Datum
+        self.assertEqual(tab[1][3], "Büro & <Co>")
+        self.assertEqual(tab[1][4], "3258026")
+        self.assertEqual(tab[1][5], "17.64")
+        self.assertEqual(tab[2][3], 'Flur "1"')
+        self.assertEqual(tab[2][6], "")                           # None -> leere Zelle
+        self.assertEqual(tab[2][9], "zwei\nZeilen")
+        self.assertEqual(tab[3][2], "4.06b")
+
+    def test_zuordnungsliste_aus_xlsx(self):
+        with tempfile.TemporaryDirectory() as d:
+            zeilen, mel = rs.lese_zuordnungsliste(self._schreibe(d))
+        self.assertEqual(mel, [])
+        self.assertEqual([z["Raum_ID"] for z in zeilen], [3258026, 3258027, 3258028])
+        self.assertEqual([z["_freigabe"] for z in zeilen], [True, False, False])
+        self.assertEqual(zeilen[0]["Stempel_Nummer"], "1.06")
+
+    def test_stempel_aus_xlsx_ordner(self):
+        stempel_csv, _ = rs.lese_stempel_ordner(os.path.dirname(BEISPIEL_CSV))
+        tab = rs.lese_tabelle(BEISPIEL_CSV)
+        with tempfile.TemporaryDirectory() as d:
+            kopf = tab[0]
+            zeilen = [dict(zip(kopf, r)) for r in tab[1:]]
+            rs.schreibe_xlsx(os.path.join(d, "Stempel.xlsx"), "Daten", kopf, zeilen)
+            # Ausgabelisten und Sperrdateien dürfen nicht als Stempel gelesen werden
+            rs.schreibe_xlsx(os.path.join(d, "Zuordnungsliste_1.xlsx"), "Z", ["OKS"], [{"OKS": "A"}])
+            rs.schreibe_xlsx(os.path.join(d, "~$Stempel.xlsx"), "Z", ["OKS"], [{"OKS": "A"}])
+            stempel, mel = rs.lese_stempel_ordner(d)
+        self.assertEqual(mel, [])
+        self.assertEqual(len(stempel), 23)
+        self.assertEqual([s.oks for s in stempel], [s.oks for s in stempel_csv])
+        self.assertAlmostEqual(stempel[0].x, stempel_csv[0].x)
+        self.assertEqual(stempel[0].nummer, stempel_csv[0].nummer)
+
+    def test_excel_gespeicherte_datei_mit_gemeinsamen_strings_und_luecken(self):
+        """Simuliert eine von Excel gespeicherte Datei: shared strings, übersprungene Zellen."""
+        import zipfile
+        with tempfile.TemporaryDirectory() as d:
+            pfad = os.path.join(d, "e.xlsx")
+            ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+            with zipfile.ZipFile(pfad, "w") as z:
+                z.writestr("xl/workbook.xml",
+                           '<workbook xmlns="%s" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                           '<sheets><sheet name="Tabelle1" sheetId="1" r:id="rId3"/></sheets></workbook>' % ns)
+                z.writestr("xl/_rels/workbook.xml.rels",
+                           '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                           '<Relationship Id="rId3" Type="x" Target="/xl/worksheets/sheet7.xml"/></Relationships>')
+                z.writestr("xl/sharedStrings.xml",
+                           '<sst xmlns="%s"><si><t>OKS</t></si><si><t>Freigabe</t></si>'
+                           '<si><r><t>A-G01-</t></r><r><t>_1</t></r></si><si><t>J</t></si></sst>' % ns)
+                z.writestr("xl/worksheets/sheet7.xml",
+                           '<worksheet xmlns="%s"><sheetData>'
+                           '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="C1" t="s"><v>1</v></c></row>'
+                           '<row r="3"><c r="A3" t="s"><v>2</v></c><c r="B3"><v>3258026</v></c>'
+                           '<c r="C3" t="s"><v>3</v></c></row></sheetData></worksheet>' % ns)
+            tab = rs.lese_xlsx(pfad)
+        self.assertEqual(tab, [["OKS", "", "Freigabe"], [], ["A-G01-_1", "3258026", "J"]])
+
+    def test_spaltenbuchstaben(self):
+        self.assertEqual([rs._spaltenbuchstabe(i) for i in (0, 25, 26, 27, 701, 702)],
+                         ["A", "Z", "AA", "AB", "ZZ", "AAA"])
+        self.assertEqual([rs._spaltenindex(b) for b in ("A", "Z", "AA", "ZZ", "AAA")], [0, 25, 26, 701, 702])
+
+    def test_ungueltige_xml_zeichen(self):
+        with tempfile.TemporaryDirectory() as d:
+            pfad = os.path.join(d, "x.xlsx")
+            rs.schreibe_xlsx(pfad, "A/B", ["T"], [{"T": "a\x01b\x0bc"}])
+            self.assertEqual(rs.lese_xlsx(pfad), [["T"], ["abc"]])
+
+    def test_csv_zeilen_aufbereitung(self):
+        z = rs.csv_zeilen([{"Stempel_Nummer": "1.06", "Raum_Flaeche": 12.5, "Abweichung_Prozent": None}],
+                          rs.ZUORDNUNG_TEXTSPALTEN, rs.ZUORDNUNG_ZAHLENFORMAT)
+        self.assertEqual(z[0], {"Stempel_Nummer": '="1.06"', "Raum_Flaeche": "12,50", "Abweichung_Prozent": None})
+
+    def test_openpyxl_prueft_das_format(self):
+        try:
+            import openpyxl
+        except ImportError:
+            self.skipTest("openpyxl nicht installiert")
+        with tempfile.TemporaryDirectory() as d:
+            pfad = self._schreibe(d)
+            wb = openpyxl.load_workbook(pfad)
+            ws = wb.active
+            self.assertEqual(ws.title, "Zuordnung")
+            self.assertEqual(ws.freeze_panes, "A2")
+            self.assertEqual(ws.auto_filter.ref, "A1:J4")
+            self.assertEqual(ws["C2"].value, "1.06")
+            self.assertEqual(ws["C2"].data_type, "s")             # Text, kein Datum
+            self.assertEqual(ws["E2"].value, 3258026)
+            self.assertAlmostEqual(ws["F2"].value, 17.64)
+            self.assertEqual(ws["F2"].number_format, "0.00")
+            self.assertEqual(ws["G3"].value, None)
+            self.assertTrue(ws["A1"].font.b)
+            self.assertEqual(ws["A3"].fill.fgColor.rgb, "FFFFF2CC")   # unsicher markiert
+            self.assertEqual(ws.data_validations.dataValidation[0].formula1, '"J,N"')
+            wb.close()
+
+
 class TestListenAusgabe(unittest.TestCase):
     def test_geprueftes_schreiben_und_ausweichen(self):
         meldungen = []
@@ -516,13 +642,16 @@ class TestListenAusgabe(unittest.TestCase):
             def __call__(self, t=""):
                 meldungen.append(t)
         with tempfile.TemporaryDirectory() as d:
-            erfolg = rs._schreibe_liste_geprueft(d, "z.csv", ["A", "B"], [{"A": 1, "B": "ü"}], L())
+            erfolg = rs._schreibe_liste_geprueft(
+                d, "z.csv", lambda pfad: rs.schreibe_csv(pfad, ["A", "B"], [{"A": 1, "B": "ü"}]), L())
             self.assertTrue(os.path.isfile(erfolg))
             self.assertIn("Bytes", meldungen[-1])
             # Ausgabeordner ist eine Datei -> Ausweichordner
             blockiert = os.path.join(d, "blockiert")
-            open(blockiert, "w").close()
-            erfolg2 = rs._schreibe_liste_geprueft(blockiert, "z2.csv", ["A"], [{"A": 1}], L())
+            with open(blockiert, "w"):
+                pass
+            erfolg2 = rs._schreibe_liste_geprueft(
+                blockiert, "z2.csv", lambda pfad: rs.schreibe_csv(pfad, ["A"], [{"A": 1}]), L())
             self.assertTrue(erfolg2 is None or os.path.isfile(erfolg2))
             self.assertTrue(any("WARNUNG" in m for m in meldungen))
             if erfolg2:
