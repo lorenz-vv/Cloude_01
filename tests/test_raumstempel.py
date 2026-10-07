@@ -468,6 +468,27 @@ class TestListen(unittest.TestCase):
             self.assertFalse(rs.ist_freigabe(w))
 
 
+class TestListenAusgabe(unittest.TestCase):
+    def test_geprueftes_schreiben_und_ausweichen(self):
+        meldungen = []
+
+        class L(object):
+            def __call__(self, t=""):
+                meldungen.append(t)
+        with tempfile.TemporaryDirectory() as d:
+            erfolg = rs._schreibe_liste_geprueft(d, "z.csv", ["A", "B"], [{"A": 1, "B": "ü"}], L())
+            self.assertTrue(os.path.isfile(erfolg))
+            self.assertIn("Bytes", meldungen[-1])
+            # Ausgabeordner ist eine Datei -> Ausweichordner
+            blockiert = os.path.join(d, "blockiert")
+            open(blockiert, "w").close()
+            erfolg2 = rs._schreibe_liste_geprueft(blockiert, "z2.csv", ["A"], [{"A": 1}], L())
+            self.assertTrue(erfolg2 is None or os.path.isfile(erfolg2))
+            self.assertTrue(any("WARNUNG" in m for m in meldungen))
+            if erfolg2:
+                os.remove(erfolg2)
+
+
 class TestGesamtbeispiel(unittest.TestCase):
     def test_beispiel_g03_synthetische_raeume(self):
         """Alle 23 Stempel der Beispieldatei; Räume mit den Stempelflächen (+1 %) ohne Treffer

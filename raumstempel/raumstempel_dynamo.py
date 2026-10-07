@@ -1369,18 +1369,39 @@ def _lauf_mit_liste(doc, DB, TransactionManager, liste_pfad, praefix, trockenlau
         _schreibe(doc, DB, TransactionManager, auftraege, log, pruef)
 
 
+def _schreibe_liste_geprueft(ausgabe, name, spalten, zeilen, log):
+    """Schreibt eine CSV, prüft danach, ob sie wirklich existiert, und weicht bei Fehlern aus.
+
+    Reihenfolge der Ordner: Ausgabeordner, Benutzer-Dokumente, Temp-Ordner.
+    Gibt den tatsächlichen Pfad zurück (oder None).
+    """
+    import tempfile
+    kandidaten = [ausgabe, os.path.join(os.path.expanduser("~"), "Documents"), tempfile.gettempdir()]
+    for ordner in kandidaten:
+        try:
+            pfad = os.path.normpath(os.path.join(ordner, name))
+            schreibe_csv(pfad, spalten, zeilen)
+            if os.path.isfile(pfad) and os.path.getsize(pfad) > 0:
+                if ordner != ausgabe:
+                    log("WARNUNG: Ausgabeordner nicht beschreibbar, Datei liegt stattdessen hier:")
+                log("%s  (%d Bytes)" % (pfad, os.path.getsize(pfad)))
+                return pfad
+            log("WARNUNG: %s wurde geschrieben, ist danach aber nicht auffindbar." % pfad)
+        except Exception as ex:
+            log("WARNUNG: Schreiben nach '%s' fehlgeschlagen: %s" % (ordner, ex))
+    return None
+
+
 def _ausgabe_listen(ausgabe, zeit, zuordnungsliste, pruefliste, log):
     log.kopf("Listen")
-    try:
-        if zuordnungsliste is not None:
-            pfad = os.path.join(ausgabe, "Zuordnungsliste_%s.csv" % zeit)
-            schreibe_csv(pfad, ZUORDNUNG_SPALTEN, zuordnungsliste)
-            log("Zuordnungsliste: %s" % pfad)
-        pfad = os.path.join(ausgabe, "Pruefliste_%s.csv" % zeit)
-        schreibe_csv(pfad, PRUEF_SPALTEN, pruefliste)
-        log("Prüfliste: %s" % pfad)
-    except Exception as ex:
-        log("Listen konnten nicht geschrieben werden: %s" % ex)
+    ausgabe = os.path.normpath(ausgabe)
+    log("Ausgabeordner: %s" % ausgabe)
+    if zuordnungsliste is not None:
+        log("Zuordnungsliste:")
+        _schreibe_liste_geprueft(ausgabe, "Zuordnungsliste_%s.csv" % zeit, ZUORDNUNG_SPALTEN,
+                                 zuordnungsliste, log)
+    log("Prüfliste:")
+    _schreibe_liste_geprueft(ausgabe, "Pruefliste_%s.csv" % zeit, PRUEF_SPALTEN, pruefliste, log)
     log.kopf("Prüfliste (Zusammenfassung)")
     zaehler = {}
     for z in pruefliste:
