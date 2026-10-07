@@ -833,11 +833,15 @@ def _haupt(eingaben, log):
             % len(konflikte))
 
     # --- Revit-Räume (nur Phase) ---------------------------------------------
-    raeume_info, phasen = _sammle_raeume(doc, DB, phase_name)
+    raeume_info, phasen, raum_fehler = _sammle_raeume(doc, DB, phase_name)
+    if raum_fehler:
+        log("WARNUNG: %d Räume konnten nicht gelesen werden und fehlen in der Auswertung, z. B.: %s"
+            % (len(raum_fehler), "; ".join(raum_fehler[:3])))
+        pruef("Räume nicht lesbar", detail="%d Räume, z. B. %s" % (len(raum_fehler), "; ".join(raum_fehler[:3])))
     if phase_name.lower() not in [p.lower() for p in phasen]:
         raise ValueError("Phase '%s' nicht im Projekt. Vorhandene Phasen: %s"
                          % (phase_name, ", ".join(phasen)))
-    alle_ebenen = [l.Name for l in DB.FilteredElementCollector(doc).OfClass(DB.Level)]
+    alle_ebenen = [_elementname(l) for l in DB.FilteredElementCollector(doc).OfClass(DB.Level)]
     raeume_je_ebene = {}
     for r in raeume_info:
         if r["platziert"]:
@@ -887,6 +891,7 @@ def _haupt(eingaben, log):
         _plausibilitaet(trafo, punkte, log, pruef, ebene)
 
         treffer = {}
+        punkt_fehler = []
         for i, (x, y) in punkte.items():
             p = DB.XYZ(x, y, z_pruef)
             treffer[i] = []
@@ -894,8 +899,11 @@ def _haupt(eingaben, log):
                 try:
                     if r["element"].IsPointInRoom(p):
                         treffer[i].append(r["id"])
-                except Exception:
-                    continue
+                except Exception as ex:
+                    punkt_fehler.append("Raum %s: %s" % (r["id"], ex))
+        if punkt_fehler:
+            log("WARNUNG: IsPointInRoom schlug %d-mal fehl, z. B.: %s" % (len(punkt_fehler), punkt_fehler[0]))
+            pruef("Punkt-in-Raum", ebene=ebene, detail="%d Fehler, z. B. %s" % (len(punkt_fehler), punkt_fehler[0]))
         n_treffer = len([i for i, t in treffer.items() if t])
         gesamt_treffer += n_treffer
         gesamt_stempel += len(st_ebene)
@@ -1014,20 +1022,49 @@ def _haupt(eingaben, log):
 
 
 # --- Revit-Hilfsfunktionen ---------------------------------------------------
+def _elementname(el):
+    """Name eines Revit-Elements.
+
+    Auf manchen Elementtypen (z. B. CADLinkType) wirft `el.Name` in Dynamo/CPython
+    "property cannot be read". Dann wird der Name über die Basisklasse bzw. über
+    Parameter gelesen.
+    """
+    if el is None:
+        return ""
+    try:
+        return el.Name
+    except Exception:
+        pass
+    try:
+        import Autodesk.Revit.DB as DB_
+        return DB_.Element.Name.__get__(el)
+    except Exception:
+        pass
+    try:
+        import Autodesk.Revit.DB as DB_
+        for bip in (DB_.BuiltInParameter.SYMBOL_NAME_PARAM, DB_.BuiltInParameter.ALL_MODEL_TYPE_NAME):
+            p = el.get_Parameter(bip)
+            if p is not None and p.AsString():
+                return p.AsString()
+    except Exception:
+        pass
+    return ""
+
+
 def _sammle_raeume(doc, DB, phase_name):
     """Alle Räume der gewünschten Phase. Räume anderer Phasen werden ignoriert."""
-    phasen = [p.Name for p in doc.Phases]
-    ergebnis = []
+    phasen = [_elementname(p) for p in doc.Phases]
+    ergebnis, fehler = [], []
     sammler = DB.FilteredElementCollector(doc).OfCategory(DB.BuiltInCategory.OST_Rooms) \
         .WhereElementIsNotElementType()
     for r in sammler:
         try:
             p = r.get_Parameter(DB.BuiltInParameter.ROOM_PHASE)
-            phase = doc.GetElement(p.AsElementId()).Name if p and p.AsElementId() else None
+            phase = _elementname(doc.GetElement(p.AsElementId())) if p and p.AsElementId() else None
             if phase is None or phase.lower() != phase_name.lower():
                 continue
             platziert = r.Location is not None and r.Area > 0
-            ebene = r.Level.Name if r.Level is not None else None
+            ebene = _elementname(r.Level) if r.Level is not None else None
             pos = None
             if r.Location is not None and hasattr(r.Location, "Point"):
                 pos = (r.Location.Point.X, r.Location.Point.Y)
@@ -1037,9 +1074,9 @@ def _sammle_raeume(doc, DB, phase_name):
                 "flaeche": r.Area * M2_JE_FT2, "pos": pos,
                 "nummer": r.get_Parameter(DB.BuiltInParameter.ROOM_NUMBER).AsString() or "",
                 "name": r.get_Parameter(DB.BuiltInParameter.ROOM_NAME).AsString() or ""})
-        except Exception:
-            continue
-    return ergebnis, phasen
+        except Exception as ex:
+            fehler.append("Raum %s: %s" % (_eid(r.Id), ex))
+    return ergebnis, phasen, fehler
 
 
 def _sammle_verknuepfungen(doc, DB):
@@ -1077,7 +1114,7 @@ def _sammle_verknuepfungen(doc, DB):
         try:
             typ = doc.GetElement(inst.GetTypeId())
             if typ is not None:
-                namen.append(typ.Name)
+                namen.append(_elementname(typ))
         except Exception as ex:
             fehler.append("Typname: %s" % ex)
         try:
@@ -1092,7 +1129,7 @@ def _sammle_verknuepfungen(doc, DB):
     liste.sort(key=lambda e: not e[2])
     typen = []
     try:
-        typen = [t.Name for t in DB.FilteredElementCollector(doc).OfClass(DB.CADLinkType)]
+        typen = [_elementname(t) for t in DB.FilteredElementCollector(doc).OfClass(DB.CADLinkType)]
     except Exception as ex:
         fehler.append("CADLinkType: %s" % ex)
     return liste, {"instanzen": n_inst, "verknuepft": n_verkn, "typen": typen, "fehler": fehler,
@@ -1147,14 +1184,14 @@ def _finde_trafo(doc, DB, stempel_ebene, ebene, manuelle_links, suffix, log, pru
     inst = gefunden[0]
     if len(gefunden) > 1:
         try:
-            auf_ebene = [i for i in gefunden if doc.GetElement(i.LevelId).Name == ebene]
+            auf_ebene = [i for i in gefunden if _elementname(doc.GetElement(i.LevelId)) == ebene]
             if auf_ebene:
                 inst = auf_ebene[0]
         except Exception:
             pass
         log("Hinweis: %d Instanzen der Verknüpfung, verwende ElementId %s." % (len(gefunden), _eid(inst.Id)))
     t = inst.GetTotalTransform()
-    log("DWG-Verknüpfung: %s (ElementId %s)" % (doc.GetElement(inst.GetTypeId()).Name, _eid(inst.Id)))
+    log("DWG-Verknüpfung: %s (ElementId %s)" % (_elementname(doc.GetElement(inst.GetTypeId())), _eid(inst.Id)))
     trafo = {"origin": (t.Origin.X, t.Origin.Y, t.Origin.Z),
              "basis_x": (t.BasisX.X, t.BasisX.Y, t.BasisX.Z),
              "basis_y": (t.BasisY.X, t.BasisY.Y, t.BasisY.Z),
@@ -1267,7 +1304,7 @@ def _lege_raeume_an(doc, DB, TransactionManager, kandidaten, praefix, log, pruef
         for s, ebene, (x, y) in kandidaten:
             try:
                 level = [l for l in DB.FilteredElementCollector(doc).OfClass(DB.Level)
-                         if l.Name == ebene][0]
+                         if _elementname(l) == ebene][0]
                 raum = doc.Create.NewRoom(level, DB.UV(x, y))
                 if raum is None or raum.Area <= 0:
                     pruef("Raum nicht angelegt", ebene=ebene, oks=s.oks, name=s.name,
