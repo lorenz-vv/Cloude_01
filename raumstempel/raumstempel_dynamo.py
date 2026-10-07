@@ -646,6 +646,31 @@ def schreibe_csv(pfad, spalten, zeilen):
             w.writerow([("" if z.get(s) is None else z.get(s)) for s in spalten])
 
 
+def excel_text(wert):
+    """Schützt Zahlen-/Datumsähnliches (z. B. Raumnummer '1.06') vor der Umwandlung in ein Datum.
+
+    Schreibt `="1.06"`; Excel zeigt dann den Text 1.06. Normaler Text bleibt unverändert.
+    """
+    w = "" if wert is None else str(wert)
+    if re.match(r"^\d[\d.,/\-: ]*$", w.strip()):
+        return '="%s"' % w.strip()
+    return w
+
+
+def zelle_text(wert):
+    """Gegenstück zu excel_text: '="1.06"' -> '1.06'."""
+    w = "" if wert is None else str(wert).strip()
+    m = re.match(r'^="(.*)"$', w)
+    return m.group(1) if m else w
+
+
+def fmt_dezimal(zahl, stellen=2):
+    """Zahl mit Dezimalkomma (deutsches Excel erkennt sie als Zahl); None -> ''."""
+    if zahl is None:
+        return ""
+    return ("%.*f" % (stellen, zahl)).replace(".", ",")
+
+
 def ist_freigabe(wert):
     return str(wert or "").strip().lower() in ("j", "ja", "x", "1", "true", "y", "yes")
 
@@ -660,6 +685,7 @@ def lese_zuordnungsliste(pfad):
     leser = csv.DictReader(io.StringIO(text), delimiter=_erkenne_trenner(zeilen_roh[0]))
     ergebnis, meldungen = [], []
     for nr, z in enumerate(leser, start=2):
+        z = {k: zelle_text(v) for k, v in z.items() if k is not None}
         try:
             rid = int(str(z.get("Raum_ID", "")).strip())
         except ValueError:
@@ -671,6 +697,20 @@ def lese_zuordnungsliste(pfad):
         z["_freigabe"] = ist_freigabe(z.get("Freigabe"))
         ergebnis.append(z)
     return ergebnis, meldungen
+
+
+def stempel_fuer_zeile(zeile, stempel_nach_oks):
+    """Stempel zu einer Zeile der Zuordnungsliste.
+
+    Quelle der Wahrheit sind die ORIGINAL-CSV-Dateien (nicht die in Excel bearbeitete Liste:
+    Excel kann '1.06' in ein Datum verwandeln). Gibt (stempel, quelle) zurück mit
+    quelle 'csv' oder 'liste' (Rückfall, wenn die OKS in den CSV-Dateien fehlt).
+    """
+    oks = re.sub(r"\s+", "", zelle_text(zeile.get("OKS", "")))
+    if oks in stempel_nach_oks:
+        return stempel_nach_oks[oks], "csv"
+    return Stempel(oks, nummer=zelle_text(zeile.get("Stempel_Nummer", "")),
+                   name=zelle_text(zeile.get("Stempel_Name", ""))), "liste"
 
 
 # ---------------------------------------------------------------------------
@@ -784,7 +824,7 @@ def _haupt(eingaben, log):
     pruefliste = []     # dicts für Pruefliste_*.csv
 
     def pruef(kat, ebene="", oks="", nummer="", name="", raum_id="", detail=""):
-        pruefliste.append({"Kategorie": kat, "Ebene": ebene, "OKS": oks, "Stempel_Nummer": nummer,
+        pruefliste.append({"Kategorie": kat, "Ebene": ebene, "OKS": oks, "Stempel_Nummer": excel_text(nummer),
                            "Name": name, "Raum_ID": raum_id, "Detail": detail})
 
     # --- Parameter prüfen / anlegen ----------------------------------------
@@ -794,7 +834,7 @@ def _haupt(eingaben, log):
     # --- Lauf 2 mit geprüfter Liste ----------------------------------------
     if liste_pfad:
         _lauf_mit_liste(doc, DB, TransactionManager, liste_pfad, praefix, trockenlauf,
-                        params_ok, log, pruef)
+                        params_ok, ordner, ausschluss_suffix, log, pruef)
         _ausgabe_listen(ausgabe, zeit, None, pruefliste, log)
         return
 
@@ -920,10 +960,11 @@ def _haupt(eingaben, log):
         for z in erg["zuordnungen"]:
             s, r = st_ebene[z.stempel_idx], raum_nach_id[z.raum_id]
             zuordnungsliste.append({
-                "Ebene": ebene, "OKS": s.oks, "Stempel_Nummer": s.nummer, "Stempel_Name": s.name,
-                "Stempel_Flaeche": s.flaeche, "Raum_ID": r["id"], "Raum_Nummer_alt": r["nummer"],
-                "Raum_Name_alt": r["name"], "Raum_Flaeche": round(r["flaeche"], 2),
-                "Abweichung_Prozent": None if z.abweichung is None else round(z.abweichung, 1),
+                "Ebene": ebene, "OKS": s.oks, "Stempel_Nummer": excel_text(s.nummer),
+                "Stempel_Name": s.name, "Stempel_Flaeche": fmt_dezimal(s.flaeche),
+                "Raum_ID": r["id"], "Raum_Nummer_alt": excel_text(r["nummer"]),
+                "Raum_Name_alt": r["name"], "Raum_Flaeche": fmt_dezimal(r["flaeche"]),
+                "Abweichung_Prozent": fmt_dezimal(z.abweichung, 1),
                 "Methode": z.methode, "Status": z.status,
                 "Freigabe": "J" if z.status == "sicher" else "N", "Bemerkung": z.bemerkung})
             jobs.append((s, r, z, ebene))
@@ -1331,8 +1372,22 @@ def _lege_raeume_an(doc, DB, TransactionManager, kandidaten, praefix, log, pruef
 
 
 def _lauf_mit_liste(doc, DB, TransactionManager, liste_pfad, praefix, trockenlauf,
-                    params_ok, log, pruef):
-    """Lauf 2: schreibt die geprüfte Zuordnungsliste (nur Zeilen mit Freigabe)."""
+                    params_ok, ordner, ausschluss_suffix, log, pruef):
+    """Lauf 2: schreibt die geprüfte Zuordnungsliste (nur Zeilen mit Freigabe).
+
+    Aus der Liste kommen nur OKS -> Raum_ID und Freigabe. Name und Nummer der Stempel
+    werden aus den Original-CSV-Dateien (Eingabe 0) gelesen.
+    """
+    stempel_nach_oks = {}
+    if ordner and os.path.isdir(ordner):
+        st, _mel_csv = lese_stempel_ordner(ordner, ausschluss_suffix)
+        eindeutig, _identisch, konflikte = bereinige_doppelte(st)
+        stempel_nach_oks = {x.oks: x for x in eindeutig}
+        log("Stempel aus %s gelesen: %d (Name und Nummer kommen aus den CSV-Dateien)." % (ordner, len(st)))
+        for oks in konflikte:
+            log("Hinweis: OKS %s mit widersprüchlichen Werten in den CSV-Dateien - Rückfall auf die Liste." % oks)
+    else:
+        log("Hinweis: CSV-Ordner nicht gefunden - Name und Nummer werden aus der Liste gelesen.")
     zeilen, mel = lese_zuordnungsliste(liste_pfad)
     for m in mel:
         log("Hinweis: " + m)
@@ -1347,7 +1402,9 @@ def _lauf_mit_liste(doc, DB, TransactionManager, liste_pfad, praefix, trockenlau
             pruef("Raum nicht gefunden", oks=z.get("OKS", ""), raum_id=z["Raum_ID"],
                   detail="Element existiert nicht oder ist kein Raum")
             continue
-        s = Stempel(z.get("OKS", ""), nummer=z.get("Stempel_Nummer", ""), name=z.get("Stempel_Name", ""))
+        s, quelle = stempel_fuer_zeile(z, stempel_nach_oks)
+        if quelle == "liste":
+            log("Hinweis: OKS %s nicht in den CSV-Dateien, nehme Werte aus der Liste." % s.oks)
         werte, fehler = schreibvorgaben(s, praefix)
         if fehler:
             pruef("Nummer zu kurz/ungültig", oks=s.oks, raum_id=z["Raum_ID"], detail=fehler)

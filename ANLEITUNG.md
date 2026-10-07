@@ -52,6 +52,18 @@ Revit-Modell vorhanden sind (*Einfügen → CAD verknüpfen*; Kontrolle unter *V
 verwalten → CAD-Formate*). DWG-Dateien im Projektordner genügen nicht. Fehlt die Verknüpfung, schreibt
 das Protokoll „CAD-Instanzen im Modell: 0 …“ bzw. die Namen, die es gefunden hat.
 
+### Zuordnungsliste in Excel bearbeiten
+
+* Das Skript schreibt Nummern wie `1.06` als `="1.06"` und Flächen mit Dezimalkomma. Dadurch zeigt
+  deutsches Excel sie beim Öffnen per Doppelklick als Text bzw. Zahl und **nicht** als Datum.
+* Bearbeiten musst du nur die Spalten **Freigabe** (`J`/`N`) und bei Bedarf **Raum_ID**.
+* **Lauf 2 liest Name und Nummer der Stempel nicht aus der Liste**, sondern aus den Original-CSV-Dateien
+  (Ordner in Eingabe 0). Aus der Liste kommen nur OKS → Raum_ID und die Freigabe. Eine in Excel
+  verfälschte Spalte (z. B. Datum statt `1.06`) richtet also keinen Schaden an.
+* Speichern: *Datei → Speichern unter → CSV (Trennzeichen-getrennt)* oder einfach als `.csv` belassen.
+* Für ältere Listen (mit Datumsproblemen): *Daten → Aus Text/CSV*, Dateiursprung UTF-8, Trennzeichen
+  Semikolon, Datentyperkennung **„Nicht erkennen“**, dann *Laden*.
+
 ### Mehrere CSV im Ordner
 
 Alle `*.csv` des Ordners werden gelesen. Liegen dieselben Stempel in zwei Dateien (z. B. eine verkleinerte

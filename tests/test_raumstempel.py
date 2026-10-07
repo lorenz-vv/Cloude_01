@@ -468,6 +468,46 @@ class TestListen(unittest.TestCase):
             self.assertFalse(rs.ist_freigabe(w))
 
 
+class TestExcelFreundlich(unittest.TestCase):
+    def test_excel_text(self):
+        self.assertEqual(rs.excel_text("1.06"), '="1.06"')
+        self.assertEqual(rs.excel_text("4.10 "), '="4.10"')
+        self.assertEqual(rs.excel_text("0.1"), '="0.1"')
+        self.assertEqual(rs.excel_text("n.v."), "n.v.")
+        self.assertEqual(rs.excel_text("4.06b"), "4.06b")
+        self.assertEqual(rs.excel_text("304a"), "304a")
+        self.assertEqual(rs.excel_text(None), "")
+
+    def test_zelle_text_und_dezimal(self):
+        self.assertEqual(rs.zelle_text('="1.06"'), "1.06")
+        self.assertEqual(rs.zelle_text("abc"), "abc")
+        self.assertEqual(rs.fmt_dezimal(17.6, 2), "17,60")
+        self.assertEqual(rs.fmt_dezimal(None), "")
+        self.assertEqual(rs.parse_zahl(rs.fmt_dezimal(17.64)), 17.64)
+
+    def test_csv_rundlauf_mit_excel_text(self):
+        with tempfile.TemporaryDirectory() as d:
+            pfad = os.path.join(d, "z.csv")
+            zeilen = [{"OKS": "A-G01-_1", "Stempel_Nummer": rs.excel_text("1.06"), "Raum_ID": 5,
+                       "Freigabe": "J", "Raum_Flaeche": rs.fmt_dezimal(12.5)}]
+            rs.schreibe_csv(pfad, ["OKS", "Stempel_Nummer", "Raum_ID", "Freigabe", "Raum_Flaeche"], zeilen)
+            with open(pfad, encoding="utf-8-sig") as f:
+                roh = f.read()
+            self.assertIn('"=""1.06"""', roh)           # korrekt zitiert -> Excel zeigt Text
+            gelesen, _ = rs.lese_zuordnungsliste(pfad)
+            self.assertEqual(gelesen[0]["Stempel_Nummer"], "1.06")
+            self.assertEqual(gelesen[0]["Raum_Flaeche"], "12,50")
+
+    def test_stempel_aus_csv_statt_aus_verfaelschter_liste(self):
+        csv_stempel = rs.Stempel("A-G01-_1", nummer="1.06", name="Büro", x=0, y=0)
+        zeile = {"OKS": "A-G01-_1", "Stempel_Nummer": "01. Jun", "Stempel_Name": "Büro"}
+        s, quelle = rs.stempel_fuer_zeile(zeile, {"A-G01-_1": csv_stempel})
+        self.assertEqual((s.nummer, quelle), ("1.06", "csv"))
+        s, quelle = rs.stempel_fuer_zeile({"OKS": "A-G01-_9", "Stempel_Nummer": '="2.5"',
+                                           "Stempel_Name": "Flur"}, {})
+        self.assertEqual((s.nummer, s.name, quelle), ("2.5", "Flur", "liste"))
+
+
 class TestListenAusgabe(unittest.TestCase):
     def test_geprueftes_schreiben_und_ausweichen(self):
         meldungen = []
