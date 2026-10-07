@@ -119,6 +119,66 @@ class TestExterneReferenzen(unittest.TestCase):
         self.assertEqual([c for c, e in erg.items() if not e["ok"]], ["G04"])
 
 
+class TestVerknuepfung(unittest.TestCase):
+    """Stempel aus '<G>.dwg', verknüpft ist in Revit '<G>_Bestand.dwg'."""
+
+    def test_norm(self):
+        self.assertEqual(rs.norm_dwgname("U:\\x\\100049_004_A_G03_Bestand.DWG"), "100049_004_a_g03_bestand")
+        self.assertEqual(rs.norm_dwgname("a/b/G01.dwg"), "g01")
+        self.assertEqual(rs.norm_dwgname(None), "")
+
+    def test_kandidaten(self):
+        self.assertEqual(rs.kandidaten_linknamen("100049_004_A_G03.dwg"),
+                         ["100049_004_a_g03_bestand", "100049_004_a_g03"])
+        self.assertEqual(rs.kandidaten_linknamen("G03.dwg", ""), ["g03"])
+        self.assertEqual(rs.kandidaten_linknamen("G03.dwg", manuell={"g03": "mein_link"}), ["mein_link"])
+
+    def test_bestand_link_wird_bevorzugt(self):
+        name, hinweis = rs.waehle_verknuepfung(
+            ["100049_004_A_G03.dwg"],
+            ["100049_004_A_G03_Bestand.dwg", "100049_004_A_G03.dwg", "Anderes.dwg"])
+        self.assertEqual(name, "100049_004_A_G03_Bestand.dwg")
+        self.assertIn("Koordinaten von Verknüpfung", hinweis)
+
+    def test_nur_bestand_link_vorhanden(self):
+        name, _ = rs.waehle_verknuepfung(["100049_004_A_G00.dwg"], ["100049_004_A_G00_Bestand.dwg"])
+        self.assertEqual(name, "100049_004_A_G00_Bestand.dwg")
+
+    def test_rueckfall_auf_gleichen_namen(self):
+        name, hinweis = rs.waehle_verknuepfung(["G01.dwg"], ["G01.dwg"])
+        self.assertEqual((name, hinweis), ("G01.dwg", ""))
+
+    def test_kein_treffer(self):
+        self.assertEqual(rs.waehle_verknuepfung(["G05.dwg"], ["G01_Bestand.dwg"]), (None, ""))
+
+    def test_manuelle_zuordnung(self):
+        name, _ = rs.waehle_verknuepfung(["G05.dwg"], ["Architektur_5OG.dwg"],
+                                         manuell={"g05": "architektur_5og"})
+        self.assertEqual(name, "Architektur_5OG.dwg")
+
+    def test_alle_geschosse_der_beispieldatei_finden_ihren_link(self):
+        stempel, _ = rs.lese_stempel_ordner(os.path.join(HIER, "daten", "alle"))
+        links = ["100049_004_A_%s_Bestand.dwg" % c for c in ("G00", "G01", "G02", "G03", "G04", "U01")]
+        for code in ("G00", "G01", "G02", "G03", "G04", "U01"):
+            dn = [s.dateiname for s in stempel if s.code == code]
+            name, _ = rs.waehle_verknuepfung(dn, links)
+            self.assertEqual(name, "100049_004_A_%s_Bestand.dwg" % code)
+
+
+class TestReferenzzeilenNurBestand(unittest.TestCase):
+    def test_geschoss_nur_mit_referenzzeilen(self):
+        text = ("FM.OKS,Position X,Position Y,Dateiname\n"
+                "A-G05-_1,1,2,A_G05_Bestand.dwg\n"
+                "A-G06-_1,1,2,A_G06.dwg\n"
+                "A-G06-_2,1,2,A_G06_Bestand.dwg\n")
+        ign = {}
+        st, mel = rs.parse_stempel_text(text, "x.csv", ignoriert_out=ign)
+        self.assertEqual([s.oks for s in st], ["A-G06-_1"])
+        self.assertEqual(ign, {"G05": 1, "G06": 1})
+        self.assertEqual(len(mel), 1)
+        self.assertEqual(set(ign) - {s.code for s in st}, {"G05"})
+
+
 class TestNummern(unittest.TestCase):
     def test_kurz_segmente(self):
         self.assertEqual(rs.kurz_nummer("100049-004-A-G01-_15"), ("G01-_15", None))
@@ -311,6 +371,12 @@ class TestSchreiben(unittest.TestCase):
         self.assertIsNone(fehler)
         self.assertEqual(w, {"name": "Büro", "oks": "100049-004-A-G01-_15",
                              "nummer_text": "Raum-Nr. 4.06b", "nummer": "G01-_15"})
+
+    def test_raumname_unveraendert_auch_nv(self):
+        s = rs.Stempel("100049-004-A-G01-_31", nummer="n.v.", name="n.v.", x=0, y=0)
+        self.assertEqual(rs.schreibvorgaben(s)[0]["name"], "n.v.")
+        s = rs.Stempel("100049-004-A-G01-_31", nummer="1", name="Aufenthaltsraum ", x=0, y=0)
+        self.assertEqual(rs.schreibvorgaben(s)[0]["name"], "Aufenthaltsraum")   # nur Randleerzeichen
 
     def test_nv_bleibt_erhalten(self):
         s = rs.Stempel("100049-004-A-G01-_15", nummer="n.v.", name="Flur", x=0, y=0)

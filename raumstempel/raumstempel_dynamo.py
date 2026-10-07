@@ -178,11 +178,13 @@ def ist_externe_referenz(dateiname, suffix=STANDARD_AUSSCHLUSS_SUFFIX):
     return name.endswith(suffix.strip().lower())
 
 
-def parse_stempel_text(text, quelle="", ausschluss_suffix=STANDARD_AUSSCHLUSS_SUFFIX):
+def parse_stempel_text(text, quelle="", ausschluss_suffix=STANDARD_AUSSCHLUSS_SUFFIX,
+                       ignoriert_out=None):
     """Parst CSV-Text. Gibt (stempel_liste, meldungen) zurück.
 
     Zeilen aus externen Referenzen (Dateiname endet auf `ausschluss_suffix`)
-    werden übersprungen und in einer Sammelmeldung gezählt.
+    werden übersprungen und in einer Sammelmeldung gezählt. `ignoriert_out`
+    (dict, optional) sammelt je Geschosscode die Zahl der ignorierten Zeilen.
     """
     meldungen = []
     stempel = []
@@ -225,6 +227,9 @@ def parse_stempel_text(text, quelle="", ausschluss_suffix=STANDARD_AUSSCHLUSS_SU
         dateiname = feld(zeile, "dateiname").strip()
         if ist_externe_referenz(dateiname, ausschluss_suffix):
             ignoriert[dateiname] = ignoriert.get(dateiname, 0) + 1
+            if ignoriert_out is not None:
+                code = geschosscode(oks)
+                ignoriert_out[code] = ignoriert_out.get(code, 0) + 1
             continue
         x = parse_zahl(feld(zeile, "x"))
         y = parse_zahl(feld(zeile, "y"))
@@ -249,7 +254,7 @@ def parse_stempel_text(text, quelle="", ausschluss_suffix=STANDARD_AUSSCHLUSS_SU
     return stempel, meldungen
 
 
-def lese_stempel_ordner(ordner, ausschluss_suffix=STANDARD_AUSSCHLUSS_SUFFIX):
+def lese_stempel_ordner(ordner, ausschluss_suffix=STANDARD_AUSSCHLUSS_SUFFIX, ignoriert_out=None):
     """Liest alle *.csv im Ordner (nicht rekursiv). Gibt (stempel, meldungen)."""
     dateien = sorted(glob.glob(os.path.join(ordner, "*.csv")))
     alle, meldungen = [], []
@@ -259,7 +264,8 @@ def lese_stempel_ordner(ordner, ausschluss_suffix=STANDARD_AUSSCHLUSS_SUFFIX):
         name = os.path.basename(pfad)
         with open(pfad, "rb") as f:
             text = dekodiere(f.read())
-        st, mel = parse_stempel_text(text, quelle=name, ausschluss_suffix=ausschluss_suffix)
+        st, mel = parse_stempel_text(text, quelle=name, ausschluss_suffix=ausschluss_suffix,
+                                     ignoriert_out=ignoriert_out)
         alle.extend(st)
         meldungen.extend(mel)
     return alle, meldungen
@@ -348,6 +354,51 @@ def pruefe_ebenen(codes_anzahl, zuordnung, revit_ebenen, raeume_je_ebene):
                     eintrag["ok"] = True
         ergebnis.append(eintrag)
     return ergebnis
+
+
+# --- DWG-Verknüpfung finden --------------------------------------------------
+def norm_dwgname(name):
+    """'U:/x/100049_004_A_G03_Bestand.DWG' -> '100049_004_a_g03_bestand'"""
+    n = re.split(r"[\\/]", str(name or "").strip())[-1].lower()
+    return re.sub(r"\.dwg$", "", n)
+
+
+def kandidaten_linknamen(dateiname, suffix=STANDARD_AUSSCHLUSS_SUFFIX, manuell=None):
+    """Namen der Revit-Verknüpfung, die für einen Stempel-Dateinamen infrage kommen.
+
+    Die Stempel stammen aus '<Geschoss>.dwg' (nur Räume, Geschosse, Stempel). In Revit
+    ist aber die zugehörige '<Geschoss>_Bestand.dwg' verknüpft (Wände, Türen, ...).
+    Beide Zeichnungen haben denselben Nullpunkt und dieselben Einheiten, deshalb wird
+    ihre Verknüpfung für die Koordinaten benutzt. Reihenfolge: manuelle Zuordnung,
+    sonst '<Name><Suffix>', sonst '<Name>'.
+    """
+    basis = norm_dwgname(dateiname)
+    manuell = manuell or {}
+    if basis in manuell:
+        return [manuell[basis]]
+    namen = []
+    if suffix and suffix.strip():
+        namen.append(basis + suffix.strip().lower())
+    namen.append(basis)
+    return namen
+
+
+def waehle_verknuepfung(dateinamen, verfuegbare, suffix=STANDARD_AUSSCHLUSS_SUFFIX, manuell=None):
+    """Wählt den Namen der Revit-Verknüpfung. Gibt (name oder None, hinweis) zurück.
+
+    dateinamen: Dateinamen der Stempel einer Ebene; verfuegbare: Namen der DWG-Verknüpfungen
+    im Projekt (normalisiert oder roh).
+    """
+    vorhanden = {norm_dwgname(v): v for v in verfuegbare}
+    for dn in sorted({norm_dwgname(d) for d in dateinamen if d}):
+        for kandidat in kandidaten_linknamen(dn, suffix, manuell):
+            k = norm_dwgname(kandidat)
+            if k in vorhanden:
+                hinweis = ""
+                if k != dn:
+                    hinweis = "Stempel aus '%s', Koordinaten von Verknüpfung '%s'" % (dn, vorhanden[k])
+                return vorhanden[k], hinweis
+    return None, ""
 
 
 # --- Koordinaten -----------------------------------------------------------
@@ -684,7 +735,7 @@ def _haupt(eingaben, log):
     for z in _als_liste(_eingabe(eingaben, 13, [])):
         if "=" in str(z):
             k, v = str(z).split("=", 1)
-            manuelle_links[_norm_dwgname(k)] = _norm_dwgname(v)
+            manuelle_links[norm_dwgname(k)] = norm_dwgname(v)
     parameter_anlegen = bool(_eingabe(eingaben, 14, True))
     ausschluss_suffix = str(_eingabe(eingaben, 15, STANDARD_AUSSCHLUSS_SUFFIX))
     if ausschluss_suffix.strip().lower() in ("-", "keine"):
@@ -718,10 +769,17 @@ def _haupt(eingaben, log):
     # --- Stempel lesen -------------------------------------------------------
     if not ordner or not os.path.isdir(ordner):
         raise ValueError("Ordner mit CSV-Dateien nicht gefunden: '%s'" % ordner)
-    stempel, mel = lese_stempel_ordner(ordner, ausschluss_suffix)
+    ignoriert_codes = {}
+    stempel, mel = lese_stempel_ordner(ordner, ausschluss_suffix, ignoriert_codes)
     for m in mel:
         log("Hinweis: " + m)
         pruef("Einlesen", detail=m)
+    vorhandene_codes = {s.code for s in stempel}
+    for code in sorted(c for c in ignoriert_codes if c not in vorhandene_codes):
+        msg = ("Geschoss %s: nur Zeilen aus externen Referenzen (%d), keine eigenen Stempel - "
+               "nicht verarbeitet" % (code, ignoriert_codes[code]))
+        log("WARNUNG: " + msg)
+        pruef("Ebene nicht verarbeitet", ebene=code or "", detail=msg)
     log("%d Stempel aus %s gelesen." % (len(stempel), ordner))
 
     # doppelte OKS: nicht verarbeiten, melden
@@ -776,7 +834,7 @@ def _haupt(eingaben, log):
         raeume_ebene = [r for r in raeume_info if r["ebene"] == ebene and r["platziert"]]
         log.kopf("Ebene %s (%s): %d Stempel, %d Räume" % (ebene, code, len(st_ebene), len(raeume_ebene)))
 
-        trafo = _finde_trafo(doc, DB, st_ebene, ebene, manuelle_links, log, pruef)
+        trafo = _finde_trafo(doc, DB, st_ebene, ebene, manuelle_links, ausschluss_suffix, log, pruef)
         if trafo is None:
             for s in st_ebene:
                 pruef("Stempel ohne Raum", ebene=ebene, oks=s.oks, nummer=s.nummer, name=s.name,
@@ -919,11 +977,6 @@ def _haupt(eingaben, log):
 
 
 # --- Revit-Hilfsfunktionen ---------------------------------------------------
-def _norm_dwgname(name):
-    n = os.path.basename(str(name or "")).strip().lower()
-    return re.sub(r"\.dwg$", "", n)
-
-
 def _sammle_raeume(doc, DB, phase_name):
     """Alle Räume der gewünschten Phase. Räume anderer Phasen werden ignoriert."""
     phasen = [p.Name for p in doc.Phases]
@@ -952,9 +1005,14 @@ def _sammle_raeume(doc, DB, phase_name):
     return ergebnis, phasen
 
 
-def _finde_trafo(doc, DB, stempel_ebene, ebene, manuelle_links, log, pruef):
-    """Sucht die DWG-Verknüpfung (über den Dateinamen der CSV) und liefert ihre Transformation."""
-    namen = sorted({_norm_dwgname(s.dateiname) for s in stempel_ebene if s.dateiname})
+def _finde_trafo(doc, DB, stempel_ebene, ebene, manuelle_links, suffix, log, pruef):
+    """Sucht die DWG-Verknüpfung und liefert ihre Transformation.
+
+    Die Stempel kommen aus '<Geschoss>.dwg', in Revit ist '<Geschoss>_Bestand.dwg'
+    verknüpft: gleicher Nullpunkt und gleiche Einheiten, daher wird deren
+    Transformation benutzt (siehe kandidaten_linknamen).
+    """
+    dateinamen = [s.dateiname for s in stempel_ebene if s.dateiname]
     instanzen = list(DB.FilteredElementCollector(doc).OfClass(DB.ImportInstance))
     verknuepfungen = []
     for inst in instanzen:
@@ -962,23 +1020,22 @@ def _finde_trafo(doc, DB, stempel_ebene, ebene, manuelle_links, log, pruef):
             if not inst.IsLinked:
                 continue
             typ = doc.GetElement(inst.GetTypeId())
-            verknuepfungen.append((_norm_dwgname(typ.Name), inst))
+            verknuepfungen.append((norm_dwgname(typ.Name), inst))
         except Exception:
             continue
-    gefunden = []
-    for n in namen:
-        ziel = manuelle_links.get(n, n)
-        gefunden = [i for (nm, i) in verknuepfungen if nm == ziel]
-        if gefunden:
-            break
+    name, hinweis = waehle_verknuepfung(dateinamen, [n for n, _ in verknuepfungen], suffix, manuelle_links)
+    gefunden = [i for (nm, i) in verknuepfungen if name is not None and nm == name]
+    if hinweis:
+        log("Hinweis: " + hinweis)
     if not gefunden:
         if len(verknuepfungen) == 1:
             gefunden = [verknuepfungen[0][1]]
             log("Keine Namensübereinstimmung, nehme die einzige DWG-Verknüpfung (%s)." % verknuepfungen[0][0])
         else:
-            log("FEHLER: Keine DWG-Verknüpfung zu %s gefunden. Vorhandene: %s. "
+            log("FEHLER: Keine DWG-Verknüpfung zu %s gefunden (gesucht auch mit '%s'). Vorhandene: %s. "
                 "Zuordnung per Eingabe 13 ('Dateiname=Verknüpfungsname')."
-                % (", ".join(namen) or "?", ", ".join(sorted(n for n, _ in verknuepfungen)) or "keine"))
+                % (", ".join(sorted({norm_dwgname(d) for d in dateinamen})) or "?", suffix,
+                   ", ".join(sorted(n for n, _ in verknuepfungen)) or "keine"))
             return None
     inst = gefunden[0]
     if len(gefunden) > 1:

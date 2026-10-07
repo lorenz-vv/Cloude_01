@@ -10,14 +10,16 @@ Datei: `raumstempel/raumstempel_dynamo.py` (Inhalt in einen Python-Script-Node k
 ## 1. Was das Skript tut
 
 * Liest alle `*.csv` eines Ordners (je Geschoss eine Datei **oder eine Datei für alle Geschosse**).
+* **Raumname:** wird unverändert aus der CSV übernommen (auch `n.v.`), nur Leerzeichen am Rand entfallen.
 * **Ignoriert Zeilen aus externen Referenzen:** Ist der `Dateiname` einer Zeile `…_Bestand.dwg`
   (z. B. `100049_004_A_G03_Bestand.dwg`), wird sie nicht verwendet. Das Suffix ist in Eingabe 15 änderbar.
 * Ordnet jeden Stempel über den **Geschosscode in der OKS** einer Revit-Ebene zu
   (`G00` = EG, `G01` = 1. OG, `G02` = 2. OG, `G03` = 3. OG, `G04` = 4. OG, `U01` = 1. UG).
   Ebenen **ohne Räume** (nicht modelliert) oder ohne Zuordnung werden übersprungen und gemeldet.
 * Nutzt nur Räume der Phase **Bestand** (Eingabe änderbar). Räume anderer Phasen werden ignoriert.
-* Rechnet die Stempelkoordinaten (DWG-Einheit m) mit der Transformation der **DWG-Verknüpfung**
-  in Revit-Koordinaten um. Die Verknüpfung wird über die CSV-Spalte `Dateiname` gefunden.
+* Rechnet die Stempelkoordinaten (DWG-Einheit m) mit der Transformation einer **DWG-Verknüpfung**
+  in Revit-Koordinaten um. Gesucht wird zum CSV-Dateinamen `…_G03.dwg` zuerst die Verknüpfung
+  `…_G03_Bestand.dwg`, sonst `…_G03.dwg` (siehe „Zeichnungsstruktur“).
 * Prüfpunkt-Höhe: Ebenenhöhe + 1 m. Test mit `Room.IsPointInRoom`.
 * **Zuordnung in drei Stufen** (wichtig, weil Stempel teils außerhalb ihres Raums liegen):
   1. *Position*: Liegen mehrere Stempel im selben Raum (z. B. 3 im Treppenhaus), gewinnt der
@@ -28,6 +30,20 @@ Datei: `raumstempel/raumstempel_dynamo.py` (Inhalt in einen Python-Script-Node k
 * Status **sicher** = Flächenabweichung ≤ 5 % und eindeutig. Alles andere ist **unsicher**
   und wird nur nach deiner Freigabe geschrieben.
 * Die Stempelfläche wird **nie** geschrieben, nur verglichen (Abweichung ab 5 % in der Prüfliste).
+
+### Zeichnungsstruktur (zwei DWG je Geschoss)
+
+| Datei                | Inhalt                                                   | In der CSV              | In Revit        |
+|----------------------|----------------------------------------------------------|-------------------------|-----------------|
+| `…_G03.dwg`          | nur AutoCAD-Architecture-Räume, Geschosse, Raumstempel; hat die `_Bestand` als Xref | Stempel werden **verwendet** | nicht verknüpft |
+| `…_G03_Bestand.dwg`  | Wände, Türen, Zeichnung; teils Stempel gleichen Blocknamens | Zeilen werden **ignoriert** | **verknüpft**, liefert die Transformation |
+
+Beide Zeichnungen haben denselben Nullpunkt und dieselben Einheiten. Deshalb werden die Koordinaten
+der Stempel aus `…_G03.dwg` mit der Transformation (Versatz/Drehung) der Revit-Verknüpfung
+`…_G03_Bestand.dwg` umgerechnet. Heißt die Verknüpfung in Revit anders, hilft Eingabe 13
+(`["…_G03.dwg=Verknüpfungsname.dwg"]`). Gibt es zu einem Geschoss in der CSV nur Zeilen aus `_Bestand`
+(Stempel dort mit anderem Block/Attributen), meldet das Skript „Geschoss … nur Zeilen aus externen
+Referenzen“ und verarbeitet es nicht.
 
 ### Geschriebene Parameter
 
@@ -126,7 +142,8 @@ nicht verarbeitete Ebenen · Flächenabweichung ≥ 5 % · fehlende Parameter ·
 
 1. Kopie des Projekts speichern („Zentralmodell lösen“ ist nicht nötig; bei Worksets alle Räume sich aneignen).
 2. Testdatei `tests/daten/100049_004_A_G03_Test.csv` (23 Stempel, G03) in einen leeren Ordner legen.
-3. Vorbedingung: Ebene „3. OG“ mit Räumen der Phase Bestand, DWG `100049_004_A_G03_Test.dwg` verknüpft.
+3. Vorbedingung: Ebene „3. OG“ mit Räumen der Phase Bestand, DWG `…_G03_Bestand.dwg` verknüpft
+   (die Stempel-CSV mit `…_G03.dwg`-Zeilen; `…_Bestand`-Zeilen werden ignoriert).
 4. **Trockenlauf.** Erwartung: Ebenenbericht „G03 → 3. OG ok“; Plausibilitätsmeldung „x von 23 Punkten im
    Umriss der Verknüpfung“ ohne Warnung; Trefferquote notieren. Kommen die Punkte nicht an: Einheit (m),
    Verknüpfungsposition und Verknüpfungsname prüfen.
