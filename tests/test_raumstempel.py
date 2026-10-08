@@ -634,6 +634,52 @@ class TestXlsx(unittest.TestCase):
             wb.close()
 
 
+class TestOksTausch(unittest.TestCase):
+    A = rs.Stempel("A-G01-_1", nummer="2.01", name="Büro", x=0, y=0)
+    B = rs.Stempel("A-G01-_2", nummer="2.02", name="Flur", x=0, y=0)
+    DATEN = {"A-G01-_1": A, "A-G01-_2": B}
+
+    def test_ohne_tausch_gilt_oks(self):
+        s, q = rs.stempel_fuer_zeile({"OKS": "A-G01-_1", "OKS_Tausch": ""}, self.DATEN)
+        self.assertEqual((s.oks, s.name, q), ("A-G01-_1", "Büro", "csv"))
+
+    def test_tausch_hat_vorrang(self):
+        s, q = rs.stempel_fuer_zeile({"OKS": "A-G01-_1", "OKS_Tausch": "A-G01-_2",
+                                      "Stempel_Name": "Büro", "Stempel_Nummer": "2.01"}, self.DATEN)
+        self.assertEqual((s.oks, s.name, s.nummer, q), ("A-G01-_2", "Flur", "2.02", "csv"))
+
+    def test_leerzeichen_im_tausch_werden_ignoriert(self):
+        s, q = rs.stempel_fuer_zeile({"OKS": "A-G01-_1", "OKS_Tausch": " A-G01-_2 "}, self.DATEN)
+        self.assertEqual((s.oks, q), ("A-G01-_2", "csv"))
+
+    def test_unbekannter_tausch_nimmt_nie_die_alten_zeilenwerte(self):
+        s, q = rs.stempel_fuer_zeile({"OKS": "A-G01-_1", "OKS_Tausch": "A-G01-_99",
+                                      "Stempel_Name": "Büro", "Stempel_Nummer": "2.01"}, self.DATEN)
+        self.assertEqual((s.oks, s.name, s.nummer, q), ("A-G01-_99", "", "", "fehlt"))
+
+    def test_rueckfall_ohne_stempeldaten_nur_ohne_tausch(self):
+        s, q = rs.stempel_fuer_zeile({"OKS": "A-G01-_1", "Stempel_Name": "Büro", "Stempel_Nummer": "2.01"}, {})
+        self.assertEqual((s.name, s.nummer, q), ("Büro", "2.01", "liste"))
+        s, q = rs.stempel_fuer_zeile({"OKS": "A-G01-_1", "OKS_Tausch": "A-G01-_2",
+                                      "Stempel_Name": "Büro"}, {})
+        self.assertEqual(q, "fehlt")
+
+    def test_aeltere_liste_ohne_die_spalte_funktioniert(self):
+        s, q = rs.stempel_fuer_zeile({"OKS": "A-G01-_2"}, self.DATEN)
+        self.assertEqual((s.name, q), ("Flur", "csv"))
+
+    def test_spalte_steht_neben_oks_und_wird_aus_xlsx_gelesen(self):
+        self.assertEqual(rs.ZUORDNUNG_SPALTEN[:3], ["Ebene", "OKS", "OKS_Tausch"])
+        with tempfile.TemporaryDirectory() as d:
+            pfad = os.path.join(d, "z.xlsx")
+            zeilen = [{"Ebene": "EG", "OKS": "A-G01-_1", "OKS_Tausch": "A-G01-_2", "Raum_ID": 7, "Freigabe": "J"},
+                      {"Ebene": "EG", "OKS": "A-G01-_2", "Raum_ID": 8, "Freigabe": "J"}]
+            rs.schreibe_xlsx(pfad, "Zuordnung", rs.ZUORDNUNG_SPALTEN, zeilen)
+            gelesen, _ = rs.lese_zuordnungsliste(pfad)
+        self.assertEqual(gelesen[0]["OKS_Tausch"], "A-G01-_2")
+        self.assertEqual(gelesen[1]["OKS_Tausch"], "")
+
+
 class TestGeschossPasst(unittest.TestCase):
     ZUORD = rs.parse_ebenen_zuordnung(["G00=EG- OK FFB", "G01=1. OG - OK FFB", "U01=1. UG - OK FFB"])
 

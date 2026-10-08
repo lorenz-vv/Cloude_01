@@ -70,18 +70,24 @@ das Protokoll „CAD-Instanzen im Modell: 0 …“ bzw. die Namen, die es gefund
 * Ältere CSV-Listen mit Datumsproblemen: *Daten → Aus Text/CSV*, UTF-8, Semikolon, Datentyperkennung
   **„Nicht erkennen“**.
 
-### Stempel einem anderen Raum zuordnen (Spalten `OKS` und `Raum_ID`)
+### Stempel tauschen (Spalten `OKS`, `OKS_Tausch` und `Raum_ID`)
 
-In der Zuordnungsliste entscheiden **nur drei Spalten**: `OKS` (= Stempel-ID: *welcher Stempel*), `Raum_ID`
-(*in welchen Raum*) und `Freigabe`.
+In der Zuordnungsliste entscheiden **nur diese Spalten**: `OKS` (= Stempel-ID, der Vorschlag des Skripts),
+`OKS_Tausch` (deine Korrektur), `Raum_ID` (*in welchen Raum*) und `Freigabe`.
 
-* Ändert man nur die `OKS`, holt Lauf 2 **Name und Raumnummer des Stempels mit dieser OKS** aus den
-  Stempeldateien und schreibt sie in den Raum der Zeile. Die Spalten `Stempel_Nummer`, `Stempel_Name`,
-  `Stempel_Flaeche`, `Methode`, `Status` und `Abweichung_Prozent` werden **nicht** gelesen und zeigen danach
-  noch den alten Stempel; sie sind nur zur Orientierung bei der Prüfung da.
+* **Regel:** Ist `OKS_Tausch` gefüllt, gilt dieser Wert. Ist sie leer, gilt die Spalte `OKS`.
+  Der Vorschlag in `OKS` bleibt unverändert stehen, du siehst also jede Korrektur.
+* Lauf 2 holt **Name und Raumnummer des Stempels mit der gültigen OKS** aus den Stempeldateien und
+  schreibt sie in den Raum der Zeile. Die Spalten `Stempel_Nummer`, `Stempel_Name`, `Stempel_Flaeche`,
+  `Methode`, `Status` und `Abweichung_Prozent` werden **nicht** gelesen und zeigen nach einem Tausch noch den
+  Vorschlagsstempel; sie sind nur zur Orientierung bei der Prüfung da.
 * Ändert man nur die `Raum_ID`, bekommt ein anderer Raum die Werte desselben Stempels.
-* Die OKS muss **exakt** wie in den Stempeldateien stehen (z. B. `100049-004-A-G01-_17`). Findet das
-  Skript sie dort nicht, schreibt es die Zeile **nicht** („OKS nicht in Stempeldaten“, Prüfliste).
+* Die OKS (auch in `OKS_Tausch`) muss **exakt** wie in den Stempeldateien stehen (z. B.
+  `100049-004-A-G01-_17`; Leerzeichen am Rand sind egal). Findet das Skript sie dort nicht, schreibt es die
+  Zeile **nicht** („OKS nicht in Stempeldaten“, Prüfliste).
+* Eine Zeile mit `OKS_Tausch`, aber ohne `J` in `Freigabe`, wird nicht geschrieben; das Protokoll weist
+  darauf hin.
+* Ältere Listen ohne die Spalte `OKS_Tausch` funktionieren weiter.
 * Gehört die OKS zu einem anderen Geschoss als die Ebene des Raums (Geschosscode `G01` bei einem Raum
   auf dem EG), schreibt das Skript die Zeile ebenfalls nicht („Geschoss passt nicht“).
 * Steht dieselbe OKS in zwei Zeilen mit verschiedenen Räumen, schreibt es beide nicht (Doppelte).

@@ -650,7 +650,7 @@ def aenderungen(ist, soll):
 
 
 # --- CSV-Ausgabe / Zuordnungsliste ------------------------------------------
-ZUORDNUNG_SPALTEN = ["Ebene", "OKS", "Stempel_Nummer", "Stempel_Name", "Stempel_Flaeche",
+ZUORDNUNG_SPALTEN = ["Ebene", "OKS", "OKS_Tausch", "Stempel_Nummer", "Stempel_Name", "Stempel_Flaeche",
                      "Raum_ID", "Raum_Nummer_alt", "Raum_Name_alt", "Raum_Flaeche",
                      "Abweichung_Prozent", "Methode", "Status", "Freigabe", "Bemerkung"]
 PRUEF_SPALTEN = ["Kategorie", "Ebene", "OKS", "Stempel_Nummer", "Name", "Raum_ID", "Detail"]
@@ -1039,13 +1039,20 @@ def pruefe_schreibkonflikte(jobs, raeume):
 def stempel_fuer_zeile(zeile, stempel_nach_oks):
     """Stempel zu einer Zeile der Zuordnungsliste.
 
-    Quelle der Wahrheit sind die ORIGINAL-CSV-Dateien (nicht die in Excel bearbeitete Liste:
-    Excel kann '1.06' in ein Datum verwandeln). Gibt (stempel, quelle) zurück mit
-    quelle 'csv' oder 'liste' (Rückfall, wenn die OKS in den CSV-Dateien fehlt).
+    Gültige OKS: die Spalte `OKS_Tausch`, wenn sie gefüllt ist, sonst die Spalte `OKS`.
+    Quelle der Wahrheit für Name und Nummer sind die ORIGINAL-CSV-Dateien (nicht die in Excel
+    bearbeitete Liste: Excel kann '1.06' in ein Datum verwandeln). Gibt (stempel, quelle) zurück:
+      'csv'    OKS in den Stempeldaten gefunden
+      'liste'  OKS dort nicht gefunden, kein Tausch: Werte der Listenzeile (passen zur OKS der Zeile)
+      'fehlt'  OKS_Tausch nicht in den Stempeldaten: Werte der Zeile gehören zu einem anderen
+               Stempel und dürfen nicht benutzt werden
     """
-    oks = re.sub(r"\s+", "", zelle_text(zeile.get("OKS", "")))
+    tausch = re.sub(r"\s+", "", zelle_text(zeile.get("OKS_Tausch", "")))
+    oks = tausch or re.sub(r"\s+", "", zelle_text(zeile.get("OKS", "")))
     if oks in stempel_nach_oks:
         return stempel_nach_oks[oks], "csv"
+    if tausch:
+        return Stempel(oks, nummer="", name=""), "fehlt"
     return Stempel(oks, nummer=zelle_text(zeile.get("Stempel_Nummer", "")),
                    name=zelle_text(zeile.get("Stempel_Name", ""))), "liste"
 
@@ -1743,6 +1750,14 @@ def _lauf_mit_liste(doc, DB, TransactionManager, liste_pfad, praefix, trockenlau
         pruef("Zuordnungsliste", detail=m)
     freigegeben = [z for z in zeilen if z["_freigabe"]]
     log("Zuordnungsliste: %d Zeilen, %d freigegeben." % (len(zeilen), len(freigegeben)))
+    mit_tausch = [z for z in zeilen if zelle_text(z.get("OKS_Tausch", ""))]
+    if mit_tausch:
+        log("%d Zeilen mit OKS_Tausch (gilt statt der Spalte OKS), davon %d freigegeben."
+            % (len(mit_tausch), len([z for z in mit_tausch if z["_freigabe"]])))
+        for z in mit_tausch:
+            if not z["_freigabe"]:
+                log("Hinweis: Raum %s hat OKS_Tausch '%s', aber Freigabe ist nicht J - nicht geschrieben."
+                    % (z["Raum_ID"], zelle_text(z.get("OKS_Tausch", ""))))
     nummern, auftraege = {}, []
     for z in freigegeben:
         raum = doc.GetElement(DB.ElementId(z["Raum_ID"]))
@@ -1752,8 +1767,8 @@ def _lauf_mit_liste(doc, DB, TransactionManager, liste_pfad, praefix, trockenlau
                   detail="Element existiert nicht oder ist kein Raum")
             continue
         s, quelle = stempel_fuer_zeile(z, stempel_nach_oks)
-        if quelle == "liste" and stempel_nach_oks:
-            # OKS in der Liste geändert, aber nicht in den Stempeldaten: nicht mit den alten
+        if quelle == "fehlt" or (quelle == "liste" and stempel_nach_oks):
+            # OKS bzw. OKS_Tausch steht nicht in den Stempeldaten: nicht mit den alten
             # Werten der Zeile (Name/Nummer des früheren Stempels) vermischen
             pruef("OKS nicht in Stempeldaten", oks=s.oks, raum_id=z["Raum_ID"],
                   detail="Diese OKS steht in keiner Stempeldatei (Tippfehler?) - nicht geschrieben")
