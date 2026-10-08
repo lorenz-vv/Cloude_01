@@ -981,6 +981,18 @@ def lese_zuordnungsliste(pfad):
     return ergebnis, meldungen
 
 
+def geschoss_passt(oks, raum_ebene, zuordnung):
+    """Gehört der Stempel (über den Geschosscode der OKS) zur Ebene des Raums?
+
+    Gibt True/False zurück, None wenn nicht beurteilbar (kein Code, Code nicht in der
+    Ebenenzuordnung oder Ebene unbekannt).
+    """
+    code = geschosscode(oks)
+    if code is None or code not in zuordnung or not raum_ebene:
+        return None
+    return norm_ebenenname(zuordnung[code]) == norm_ebenenname(raum_ebene)
+
+
 def pruefe_schreibkonflikte(jobs, raeume):
     """Prüft vor dem Schreiben (Lauf 2), ob die Liste zu doppelten Werten führen würde.
 
@@ -1162,7 +1174,7 @@ def _haupt(eingaben, log):
     # --- Lauf 2 mit geprüfter Liste ----------------------------------------
     if liste_pfad:
         _lauf_mit_liste(doc, DB, TransactionManager, liste_pfad, praefix, trockenlauf,
-                        params_ok, ordner, ausschluss_suffix, phase_name, log, pruef)
+                        params_ok, ordner, ausschluss_suffix, phase_name, ebenen_zuordnung, log, pruef)
         _ausgabe_listen(ausgabe, zeit, None, pruefliste, log, formate)
         return
 
@@ -1709,7 +1721,7 @@ def _param_text(el, name):
 
 
 def _lauf_mit_liste(doc, DB, TransactionManager, liste_pfad, praefix, trockenlauf,
-                    params_ok, ordner, ausschluss_suffix, phase_name, log, pruef):
+                    params_ok, ordner, ausschluss_suffix, phase_name, ebenen_zuordnung, log, pruef):
     """Lauf 2: schreibt die geprüfte Zuordnungsliste (nur Zeilen mit Freigabe).
 
     Aus der Liste kommen nur OKS -> Raum_ID und Freigabe. Name und Nummer der Stempel
@@ -1740,8 +1752,23 @@ def _lauf_mit_liste(doc, DB, TransactionManager, liste_pfad, praefix, trockenlau
                   detail="Element existiert nicht oder ist kein Raum")
             continue
         s, quelle = stempel_fuer_zeile(z, stempel_nach_oks)
+        if quelle == "liste" and stempel_nach_oks:
+            # OKS in der Liste geändert, aber nicht in den Stempeldaten: nicht mit den alten
+            # Werten der Zeile (Name/Nummer des früheren Stempels) vermischen
+            pruef("OKS nicht in Stempeldaten", oks=s.oks, raum_id=z["Raum_ID"],
+                  detail="Diese OKS steht in keiner Stempeldatei (Tippfehler?) - nicht geschrieben")
+            log("OKS '%s' (Raum %s) steht in keiner Stempeldatei - nicht geschrieben." % (s.oks, z["Raum_ID"]))
+            continue
         if quelle == "liste":
             log("Hinweis: OKS %s nicht in den CSV-Dateien, nehme Werte aus der Liste." % s.oks)
+        raum_ebene = _elementname(raum.Level) if getattr(raum, "Level", None) is not None else ""
+        if geschoss_passt(s.oks, raum_ebene, ebenen_zuordnung) is False:
+            pruef("Geschoss passt nicht", ebene=raum_ebene, oks=s.oks, raum_id=z["Raum_ID"],
+                  detail="Stempel gehört zum Geschoss %s, der Raum liegt auf '%s' - nicht geschrieben"
+                         % (geschosscode(s.oks), raum_ebene))
+            log("OKS %s passt nicht zur Ebene '%s' von Raum %s - nicht geschrieben."
+                % (s.oks, raum_ebene, z["Raum_ID"]))
+            continue
         werte, fehler = schreibvorgaben(s, praefix)
         if fehler:
             pruef("Nummer zu kurz/ungültig", oks=s.oks, raum_id=z["Raum_ID"], detail=fehler)

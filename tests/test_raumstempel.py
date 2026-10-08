@@ -634,6 +634,23 @@ class TestXlsx(unittest.TestCase):
             wb.close()
 
 
+class TestGeschossPasst(unittest.TestCase):
+    ZUORD = rs.parse_ebenen_zuordnung(["G00=EG- OK FFB", "G01=1. OG - OK FFB", "U01=1. UG - OK FFB"])
+
+    def test_passt(self):
+        self.assertTrue(rs.geschoss_passt("100049-004-A-G01-_17", "1. OG - OK FFB", self.ZUORD))
+        self.assertTrue(rs.geschoss_passt("100049-004-A-G01-_17", "1.OG - OK FFB", self.ZUORD))
+        self.assertTrue(rs.geschoss_passt("100049-004-A-U01-_1", "1. UG - OK FFB", self.ZUORD))
+
+    def test_passt_nicht(self):
+        self.assertIs(rs.geschoss_passt("100049-004-A-G01-_17", "EG- OK FFB", self.ZUORD), False)
+
+    def test_nicht_beurteilbar(self):
+        self.assertIsNone(rs.geschoss_passt("100049-004-A-G09-_1", "EG- OK FFB", self.ZUORD))   # Code unbekannt
+        self.assertIsNone(rs.geschoss_passt("ohne code", "EG- OK FFB", self.ZUORD))
+        self.assertIsNone(rs.geschoss_passt("100049-004-A-G01-_17", "", self.ZUORD))            # Ebene unbekannt
+
+
 class TestSchreibkonflikte(unittest.TestCase):
     @staticmethod
     def _j(rid, oks, nr):

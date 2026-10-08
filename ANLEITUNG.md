@@ -70,6 +70,22 @@ das Protokoll „CAD-Instanzen im Modell: 0 …“ bzw. die Namen, die es gefund
 * Ältere CSV-Listen mit Datumsproblemen: *Daten → Aus Text/CSV*, UTF-8, Semikolon, Datentyperkennung
   **„Nicht erkennen“**.
 
+### Stempel einem anderen Raum zuordnen (Spalten `OKS` und `Raum_ID`)
+
+In der Zuordnungsliste entscheiden **nur drei Spalten**: `OKS` (= Stempel-ID: *welcher Stempel*), `Raum_ID`
+(*in welchen Raum*) und `Freigabe`.
+
+* Ändert man nur die `OKS`, holt Lauf 2 **Name und Raumnummer des Stempels mit dieser OKS** aus den
+  Stempeldateien und schreibt sie in den Raum der Zeile. Die Spalten `Stempel_Nummer`, `Stempel_Name`,
+  `Stempel_Flaeche`, `Methode`, `Status` und `Abweichung_Prozent` werden **nicht** gelesen und zeigen danach
+  noch den alten Stempel; sie sind nur zur Orientierung bei der Prüfung da.
+* Ändert man nur die `Raum_ID`, bekommt ein anderer Raum die Werte desselben Stempels.
+* Die OKS muss **exakt** wie in den Stempeldateien stehen (z. B. `100049-004-A-G01-_17`). Findet das
+  Skript sie dort nicht, schreibt es die Zeile **nicht** („OKS nicht in Stempeldaten“, Prüfliste).
+* Gehört die OKS zu einem anderen Geschoss als die Ebene des Raums (Geschosscode `G01` bei einem Raum
+  auf dem EG), schreibt das Skript die Zeile ebenfalls nicht („Geschoss passt nicht“).
+* Steht dieselbe OKS in zwei Zeilen mit verschiedenen Räumen, schreibt es beide nicht (Doppelte).
+
 ### Lauf 2 mehrfach ausführen (Nacharbeit der unklaren Stempel)
 
 Empfohlener Ablauf: Lauf 1 → Liste prüfen → Lauf 2 (die sicheren Zeilen sind `J`) → in **derselben Liste**
