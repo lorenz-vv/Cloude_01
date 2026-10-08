@@ -70,6 +70,27 @@ das Protokoll „CAD-Instanzen im Modell: 0 …“ bzw. die Namen, die es gefund
 * Ältere CSV-Listen mit Datumsproblemen: *Daten → Aus Text/CSV*, UTF-8, Semikolon, Datentyperkennung
   **„Nicht erkennen“**.
 
+### Lauf 2 mehrfach ausführen (Nacharbeit der unklaren Stempel)
+
+Empfohlener Ablauf: Lauf 1 → Liste prüfen → Lauf 2 (die sicheren Zeilen sind `J`) → in **derselben Liste**
+die unklaren Zeilen klären (`J` setzen, ggf. `Raum_ID` ändern) → Lauf 2 erneut mit derselben Liste.
+
+* Das ist unkritisch: bereits geschriebene Zeilen werden als „unverändert“ übersprungen. Nur neue
+  Freigaben werden geschrieben. Der Lauf ist eine Revit-Transaktion (Strg + Z macht ihn rückgängig).
+* **Nicht** zwischendurch Lauf 1 neu starten und mit der neuen Liste weiterarbeiten: sie setzt `Freigabe`
+  wieder auf die Vorschläge zurück, deine Entscheidungen aus der alten Liste fehlen darin.
+* Das Skript prüft vor dem Schreiben und **schreibt nicht**, wenn dadurch Doppelte entstünden. Die
+  Prüfliste nennt dann die Raum-IDs:
+  * *Raum mehrfach in der Liste*: zwei freigegebene Zeilen zeigen auf denselben Raum.
+  * *OKS bereits an anderem Raum*: du hast einen schon geschriebenen Stempel einem anderen Raum zugewiesen.
+    Der alte Raum behält seine Werte. Lösche dort `RaumOKS` (z. B. in einer Raumliste) oder gib ihm einen
+    anderen Stempel, dann Lauf 2 wiederholen. Vertauschte Zuordnungen (zwei Räume tauschen ihre Stempel)
+    sind erlaubt.
+  * *Doppelte Nummer*: die Raumnummer ist an einem anderen Raum vergeben; die übrigen Werte werden
+    geschrieben, nur die Nummer nicht.
+* Werte, die du nach Lauf 2 in Revit von Hand geändert hast (Name, Nummer), werden bei Zeilen mit `J`
+  wieder überschrieben. Setze solche Zeilen auf `N`.
+
 ### Mehrere Dateien im Ordner
 
 Alle `*.csv` **und `*.xlsx`** des Ordners werden als Stempeldateien gelesen (die AutoCAD-Datenextraktion

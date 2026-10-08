@@ -634,6 +634,59 @@ class TestXlsx(unittest.TestCase):
             wb.close()
 
 
+class TestSchreibkonflikte(unittest.TestCase):
+    @staticmethod
+    def _j(rid, oks, nr):
+        return {"raum_id": rid, "oks": oks, "nummer": nr}
+
+    def test_wiederholter_lauf_ohne_aenderung_hat_keine_konflikte(self):
+        """Lauf 2 zweimal mit derselben Liste: alles ist schon geschrieben."""
+        ist = {1: {"oks": "A-G01-_1", "nummer": "G01-_1"}, 2: {"oks": "A-G01-_2", "nummer": "G01-_2"}}
+        jobs = [self._j(1, "A-G01-_1", "G01-_1"), self._j(2, "A-G01-_2", "G01-_2")]
+        k = rs.pruefe_schreibkonflikte(jobs, ist)
+        self.assertEqual(k, {"mehrfach": {}, "oks": {}, "nummer": {}})
+
+    def test_nachfreigabe_unklarer_stempel_in_leeren_raum(self):
+        """Typischer Ablauf: erst 'sichere' Zeilen geschrieben, dann unklare freigegeben."""
+        ist = {1: {"oks": "A-G01-_1", "nummer": "G01-_1"}, 2: {"oks": "", "nummer": "n.1"}}
+        jobs = [self._j(1, "A-G01-_1", "G01-_1"), self._j(2, "A-G01-_2", "G01-_2")]
+        self.assertEqual(rs.pruefe_schreibkonflikte(jobs, ist), {"mehrfach": {}, "oks": {}, "nummer": {}})
+
+    def test_stempel_in_anderen_raum_verschoben_alter_raum_behaelt_werte(self):
+        ist = {1: {"oks": "A-G01-_1", "nummer": "G01-_1"}, 3: {"oks": "", "nummer": "n.3"}}
+        k = rs.pruefe_schreibkonflikte([self._j(3, "A-G01-_1", "G01-_1")], ist)
+        self.assertEqual(k["oks"], {0: [1]})
+        self.assertEqual(k["nummer"], {0: [1]})
+
+    def test_vertauschte_zuordnung_ist_erlaubt(self):
+        ist = {1: {"oks": "A-_1", "nummer": "G01-_1"}, 2: {"oks": "A-_2", "nummer": "G01-_2"}}
+        jobs = [self._j(1, "A-_2", "G01-_2"), self._j(2, "A-_1", "G01-_1")]
+        self.assertEqual(rs.pruefe_schreibkonflikte(jobs, ist), {"mehrfach": {}, "oks": {}, "nummer": {}})
+
+    def test_zwei_freigaben_fuer_denselben_raum(self):
+        ist = {5: {"oks": "", "nummer": "n.5"}}
+        jobs = [self._j(5, "A-_1", "G01-_1"), self._j(5, "A-_2", "G01-_2"), self._j(6, "A-_3", "G01-_3")]
+        k = rs.pruefe_schreibkonflikte(jobs, ist)
+        self.assertEqual(k["mehrfach"], {5: [0, 1]})
+        self.assertEqual(k["oks"], {})
+
+    def test_nummer_schon_an_unberuehrtem_raum_vergeben(self):
+        ist = {1: {"oks": "", "nummer": "G01-_1"}, 2: {"oks": "", "nummer": "n.2"}}
+        k = rs.pruefe_schreibkonflikte([self._j(2, "A-G01-_1", "G01-_1")], ist)
+        self.assertEqual(k["nummer"], {0: [1]})
+        self.assertEqual(k["oks"], {})
+
+    def test_gleiche_oks_zweimal_in_verschiedenen_raeumen(self):
+        ist = {1: {"oks": "", "nummer": ""}, 2: {"oks": "", "nummer": ""}}
+        jobs = [self._j(1, "A-_1", "G01-_1"), self._j(2, "A-_1", "G01-_1")]
+        k = rs.pruefe_schreibkonflikte(jobs, ist)
+        self.assertEqual(sorted(k["oks"]), [0, 1])
+
+    def test_raum_ausserhalb_der_phase_wird_trotzdem_geprueft(self):
+        k = rs.pruefe_schreibkonflikte([self._j(1, "A-_1", "G01-_1"), self._j(99, "A-_1", "G01-_9")], {})
+        self.assertEqual(sorted(k["oks"]), [0, 1])
+
+
 class TestListenAusgabe(unittest.TestCase):
     def test_geprueftes_schreiben_und_ausweichen(self):
         meldungen = []

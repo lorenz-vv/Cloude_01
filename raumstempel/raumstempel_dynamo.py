@@ -981,6 +981,49 @@ def lese_zuordnungsliste(pfad):
     return ergebnis, meldungen
 
 
+def pruefe_schreibkonflikte(jobs, raeume):
+    """Prüft vor dem Schreiben (Lauf 2), ob die Liste zu doppelten Werten führen würde.
+
+    jobs:   Liste von dict(raum_id, oks, nummer), eine je freigegebener Zeile
+    raeume: dict raum_id -> dict(oks, nummer) mit dem IST-Zustand der Revit-Räume
+    Der Endzustand wird simuliert: Räume, die in dieser Liste neu beschrieben werden, haben
+    danach die neuen Werte (so sind auch vertauschte Zuordnungen möglich). Rückgabe:
+      mehrfach  {raum_id: [job-index, ...]}  derselbe Raum steht mehrfach in der Liste
+      oks       {job-index: [raum_id, ...]}  OKS stünde danach an mehreren Räumen
+      nummer    {job-index: [raum_id, ...]}  Raumnummer stünde danach an mehreren Räumen
+    Zeilen aus `mehrfach` und `oks` dürfen nicht geschrieben werden, bei `nummer` nur die Nummer.
+    """
+    je_raum = {}
+    for i, j in enumerate(jobs):
+        je_raum.setdefault(j["raum_id"], []).append(i)
+    mehrfach = {rid: idx for rid, idx in je_raum.items() if len(idx) > 1}
+    gueltig = [i for i, j in enumerate(jobs) if j["raum_id"] not in mehrfach]
+    neu = {jobs[i]["raum_id"]: jobs[i] for i in gueltig}
+    alle = set(raeume) | set(neu)
+    oks_konflikt, nummer_konflikt = {}, {}
+    for i in gueltig:
+        j = jobs[i]
+        gleiche_oks, gleiche_nr = [], []
+        for rid in sorted(alle):
+            if rid == j["raum_id"]:
+                continue
+            ist = raeume.get(rid, {})
+            if rid in neu:
+                oks_dort = neu[rid]["oks"]
+                nr_dort = neu[rid]["nummer"] or ist.get("nummer", "")
+            else:
+                oks_dort, nr_dort = ist.get("oks", ""), ist.get("nummer", "")
+            if j["oks"] and oks_dort == j["oks"]:
+                gleiche_oks.append(rid)
+            if j["nummer"] and nr_dort == j["nummer"]:
+                gleiche_nr.append(rid)
+        if gleiche_oks:
+            oks_konflikt[i] = gleiche_oks
+        if gleiche_nr:
+            nummer_konflikt[i] = gleiche_nr
+    return {"mehrfach": mehrfach, "oks": oks_konflikt, "nummer": nummer_konflikt}
+
+
 def stempel_fuer_zeile(zeile, stempel_nach_oks):
     """Stempel zu einer Zeile der Zuordnungsliste.
 
@@ -1119,7 +1162,7 @@ def _haupt(eingaben, log):
     # --- Lauf 2 mit geprüfter Liste ----------------------------------------
     if liste_pfad:
         _lauf_mit_liste(doc, DB, TransactionManager, liste_pfad, praefix, trockenlauf,
-                        params_ok, ordner, ausschluss_suffix, log, pruef)
+                        params_ok, ordner, ausschluss_suffix, phase_name, log, pruef)
         _ausgabe_listen(ausgabe, zeit, None, pruefliste, log, formate)
         return
 
@@ -1656,8 +1699,17 @@ def _lege_raeume_an(doc, DB, TransactionManager, kandidaten, praefix, log, pruef
     log("Neu angelegte Räume: %d" % angelegt)
 
 
+def _param_text(el, name):
+    """Textwert eines Parameters oder '' (auch wenn der Parameter nicht existiert)."""
+    try:
+        p = el.LookupParameter(name)
+        return (p.AsString() or "") if p is not None else ""
+    except Exception:
+        return ""
+
+
 def _lauf_mit_liste(doc, DB, TransactionManager, liste_pfad, praefix, trockenlauf,
-                    params_ok, ordner, ausschluss_suffix, log, pruef):
+                    params_ok, ordner, ausschluss_suffix, phase_name, log, pruef):
     """Lauf 2: schreibt die geprüfte Zuordnungsliste (nur Zeilen mit Freigabe).
 
     Aus der Liste kommen nur OKS -> Raum_ID und Freigabe. Name und Nummer der Stempel
@@ -1703,6 +1755,37 @@ def _lauf_mit_liste(doc, DB, TransactionManager, liste_pfad, praefix, trockenlau
     for _r, werte, _e, _s in auftraege:
         if werte["nummer"] in doppelt:
             werte["nummer"] = None
+
+    # Konflikte mit dem Ist-Zustand der Räume (z. B. Liste nach einem früheren Lauf 2 geändert)
+    raeume_info, _phasen, _fehler = _sammle_raeume(doc, DB, phase_name)
+    raeume_ist = {r["id"]: {"oks": _param_text(r["element"], PARAM_OKS), "nummer": r["nummer"]}
+                  for r in raeume_info}
+    jobs = [{"raum_id": r["id"], "oks": s.oks, "nummer": werte["nummer"]}
+            for r, werte, _e, s in auftraege]
+    konflikte = pruefe_schreibkonflikte(jobs, raeume_ist)
+    ueberspringen = set()
+    for rid, idx in konflikte["mehrfach"].items():
+        ueberspringen.update(idx)
+        oks_liste = ", ".join(jobs[i]["oks"] for i in idx)
+        pruef("Raum mehrfach in der Liste", oks=oks_liste, raum_id=rid,
+              detail="Mehrere freigegebene Stempel für denselben Raum - keiner geschrieben")
+        log("Raum %s steht mehrfach in der Liste (%s) - nicht geschrieben." % (rid, oks_liste))
+    for i, andere in konflikte["oks"].items():
+        ueberspringen.add(i)
+        pruef("OKS bereits an anderem Raum", oks=jobs[i]["oks"], raum_id=jobs[i]["raum_id"],
+              detail="OKS steht danach auch an Raum %s - nicht geschrieben (Wert dort zuerst löschen "
+                     "oder diesen Raum ändern)" % ", ".join(str(a) for a in andere))
+        log("OKS %s steht schon an Raum %s - Zeile für Raum %s nicht geschrieben."
+            % (jobs[i]["oks"], ", ".join(str(a) for a in andere), jobs[i]["raum_id"]))
+    for i, andere in konflikte["nummer"].items():
+        if i in ueberspringen:
+            continue
+        auftraege[i][1]["nummer"] = None
+        pruef("Doppelte Nummer", oks=jobs[i]["oks"], nummer=jobs[i]["nummer"], raum_id=jobs[i]["raum_id"],
+              detail="Nummer ist schon an Raum %s vergeben - Nummer nicht geschrieben"
+                     % ", ".join(str(a) for a in andere))
+    auftraege = [a for i, a in enumerate(auftraege) if i not in ueberspringen]
+
     if trockenlauf:
         log("Trockenlauf: %d Räume würden beschrieben. Nichts geschrieben." % len(auftraege))
     elif not params_ok:
