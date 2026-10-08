@@ -92,6 +92,21 @@ In der Zuordnungsliste entscheiden **nur diese Spalten**: `OKS` (= Stempel-ID, d
   auf dem EG), schreibt das Skript die Zeile ebenfalls nicht („Geschoss passt nicht“).
 * Steht dieselbe OKS in zwei Zeilen mit verschiedenen Räumen, schreibt es beide nicht (Doppelte).
 
+### Die drei Blätter der Excel-Zuordnungsliste
+
+| Blatt         | Inhalt | Zweck |
+|---------------|--------|-------|
+| **Zuordnung** | je Stempel eine Zeile (Vorschlag des Skripts) | hier arbeitest du; **Lauf 2 liest nur dieses Blatt** |
+| **Stempel**   | alle gelesenen Stempel: Ebene, Geschoss, OKS, Name, Nummer, Fläche, Status, Raum-Vorschlag, Quelle | Stempel finden; Status `zugeordnet` / `frei` / `Ebene nicht verarbeitet` (nicht zugeordnete Zeilen hellgelb) |
+| **Räume**     | alle Räume der Phase Bestand: Ebene, Raum_ID, Nummer, Name, Fläche, aktuelle `RaumOKS`, Stempel-Vorschlag, Status | Raum_ID finden; Status `zugeordnet` / `ohne Stempel` / `nicht platziert` (ohne Stempel hellgelb) |
+
+* In der Spalte **OKS_Tausch** (Blatt Zuordnung) gibt es eine **Auswahlliste** mit allen Stempel-IDs, in der
+  Spalte **Raum_ID** eine Auswahlliste mit allen Räumen. Die Listen entstehen aus den Blättern Stempel und
+  Räume. Mit den Filtern in den Blättern (nach Ebene, Status) findest du schnell einen freien Stempel.
+* Die Blätter **Stempel** und **Räume** werden beim nächsten Lauf 1 neu geschrieben; Lauf 2 liest sie nicht.
+  Benenne das Blatt **Zuordnung** nicht um (sonst liest Lauf 2 ersatzweise das erste Blatt).
+* Die Zusatzblätter gibt es nur in der Excel-Ausgabe (Eingabe 16 = `"xlsx"` oder `"beides"`), nicht in der CSV.
+
 ### Lauf 2 mehrfach ausführen (Nacharbeit der unklaren Stempel)
 
 Empfohlener Ablauf: Lauf 1 → Liste prüfen → Lauf 2 (die sicheren Zeilen sind `J`) → in **derselben Liste**

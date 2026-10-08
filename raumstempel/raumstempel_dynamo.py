@@ -654,9 +654,58 @@ ZUORDNUNG_SPALTEN = ["Ebene", "OKS", "OKS_Tausch", "Stempel_Nummer", "Stempel_Na
                      "Raum_ID", "Raum_Nummer_alt", "Raum_Name_alt", "Raum_Flaeche",
                      "Abweichung_Prozent", "Methode", "Status", "Freigabe", "Bemerkung"]
 PRUEF_SPALTEN = ["Kategorie", "Ebene", "OKS", "Stempel_Nummer", "Name", "Raum_ID", "Detail"]
+STEMPEL_SPALTEN = ["Ebene", "Geschoss", "OKS", "Name", "Nummer", "Flaeche", "Status",
+                   "Raum_ID_Vorschlag", "Quelle"]
+RAEUME_SPALTEN = ["Ebene", "Raum_ID", "Nummer", "Name", "Flaeche", "RaumOKS_aktuell",
+                  "Stempel_Vorschlag", "Status"]
 ZUORDNUNG_TEXTSPALTEN = ("Stempel_Nummer", "Raum_Nummer_alt")
 PRUEF_TEXTSPALTEN = ("Stempel_Nummer",)
 ZUORDNUNG_ZAHLENFORMAT = {"Stempel_Flaeche": 2, "Raum_Flaeche": 2, "Abweichung_Prozent": 1}
+
+
+def baue_stempel_zeilen(stempel, ebene_von_code, raum_je_oks):
+    """Zeilen für das Blatt "Stempel": alle gelesenen Stempel mit Status.
+
+    ebene_von_code: {Geschosscode: Revit-Ebenenname} der verarbeiteten Ebenen
+    raum_je_oks:    {OKS: Raum_ID} der Vorschläge aus Lauf 1
+    Status: zugeordnet | frei (Ebene verarbeitet, aber kein Raum) | Ebene nicht verarbeitet
+    """
+    zeilen = []
+    for s in sorted(stempel, key=lambda x: (x.code or "", x.oks)):
+        rid = raum_je_oks.get(s.oks)
+        if rid is not None:
+            status = "zugeordnet"
+        elif s.code not in ebene_von_code:
+            status = "Ebene nicht verarbeitet"
+        else:
+            status = "frei"
+        zeilen.append({"Ebene": ebene_von_code.get(s.code, ""), "Geschoss": s.code or "",
+                       "OKS": s.oks, "Name": s.name, "Nummer": s.nummer, "Flaeche": s.flaeche,
+                       "Status": status, "Raum_ID_Vorschlag": rid, "Quelle": s.quelle})
+    return zeilen
+
+
+def baue_raeume_zeilen(raeume, oks_je_raum):
+    """Zeilen für das Blatt "Räume": alle Räume der Phase mit Status.
+
+    raeume: Liste von dict(id, ebene, nummer, name, flaeche, platziert, oks_aktuell)
+    oks_je_raum: {Raum_ID: OKS} der Vorschläge aus Lauf 1
+    Status: zugeordnet | ohne Stempel | nicht platziert
+    """
+    zeilen = []
+    for r in sorted(raeume, key=lambda x: (x.get("ebene") or "", x["id"])):
+        oks = oks_je_raum.get(r["id"], "")
+        if not r.get("platziert", True):
+            status = "nicht platziert"
+        elif oks:
+            status = "zugeordnet"
+        else:
+            status = "ohne Stempel"
+        zeilen.append({"Ebene": r.get("ebene") or "", "Raum_ID": r["id"], "Nummer": r.get("nummer", ""),
+                       "Name": r.get("name", ""), "Flaeche": r.get("flaeche"),
+                       "RaumOKS_aktuell": r.get("oks_aktuell", ""), "Stempel_Vorschlag": oks,
+                       "Status": status})
+    return zeilen
 
 
 def schreibe_csv(pfad, spalten, zeilen):
@@ -726,16 +775,9 @@ def _xml_text(wert):
     return _xml_escape(_XML_UNGUELTIG.sub("", str(wert)), {'"': "&quot;"})
 
 
-def schreibe_xlsx(pfad, blattname, spalten, zeilen, zahlenformat=None, freigabe_spalte=None,
-                  markiere=None):
-    """Schreibt eine einfache .xlsx (ohne Zusatzbibliothek).
-
-    Texte werden als Text gespeichert (Excel wandelt '1.06' NICHT in ein Datum um), Zahlen als
-    Zahlen. Kopfzeile fett/farbig, fixiert, mit Autofilter, Spaltenbreiten angepasst.
-    zahlenformat: {Spalte: Dezimalstellen (1 oder 2)} für Gleitkommawerte
-    freigabe_spalte: Name einer Spalte, die eine Auswahlliste J/N bekommt
-    markiere: Funktion zeile -> bool; markierte Zeilen werden hellgelb hinterlegt
-    """
+def _blatt_xml(spalten, zeilen, zahlenformat=None, freigabe_spalte=None, markiere=None,
+               validierungen=None):
+    """XML eines Tabellenblatts. Gibt (xml, letzte_spalte, letzte_zeile) zurück."""
     zahlenformat = zahlenformat or {}
     breiten = [max(len(str(sp)), 6) for sp in spalten]
     zeilen_xml = ['<row r="1">%s</row>' % "".join(
@@ -770,48 +812,94 @@ def schreibe_xlsx(pfad, blattname, spalten, zeilen, zahlenformat=None, freigabe_
     letzte_zeile = max(len(zeilen) + 1, 2)
     cols = "".join('<col min="%d" max="%d" width="%d" customWidth="1"/>' % (i + 1, i + 1, min(b + 2, 60))
                    for i, b in enumerate(breiten))
-    validierung = ""
-    if freigabe_spalte in spalten:
-        b = _spaltenbuchstabe(spalten.index(freigabe_spalte))
-        validierung = ('<dataValidations count="1"><dataValidation type="list" allowBlank="1" '
-                       'showErrorMessage="1" sqref="%s2:%s%d"><formula1>"J,N"</formula1>'
-                       '</dataValidation></dataValidations>' % (b, b, letzte_zeile + 200))
-    blatt = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-             '<worksheet xmlns="' + _NS_MAIN + '">'
-             '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" '
-             'activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A2" '
-             'sqref="A2"/></sheetView></sheetViews>'
-             '<sheetFormatPr defaultRowHeight="15"/>'
-             '<cols>' + cols + '</cols>'
-             '<sheetData>' + "".join(zeilen_xml) + '</sheetData>'
-             '<autoFilter ref="A1:%s%d"/>' % (letzte_spalte, letzte_zeile) + validierung +
-             '</worksheet>')
+    listen = dict(validierungen or {})
+    if freigabe_spalte:
+        listen[freigabe_spalte] = '"J,N"'
+    pruefungen = []
+    for sp, formel in listen.items():
+        if sp in spalten:
+            b = _spaltenbuchstabe(spalten.index(sp))
+            pruefungen.append(
+                '<dataValidation type="list" allowBlank="1" showErrorMessage="1" '
+                'errorTitle="Ungültiger Wert" error="Bitte einen Wert aus der Liste wählen." '
+                'sqref="%s2:%s%d"><formula1>%s</formula1></dataValidation>'
+                % (b, b, letzte_zeile + 200, _xml_text(formel)))
+    validierung = ('<dataValidations count="%d">%s</dataValidations>' % (len(pruefungen), "".join(pruefungen))
+                   if pruefungen else "")
+    xml = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+           '<worksheet xmlns="' + _NS_MAIN + '">'
+           '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" '
+           'activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A2" '
+           'sqref="A2"/></sheetView></sheetViews>'
+           '<sheetFormatPr defaultRowHeight="15"/>'
+           '<cols>' + cols + '</cols>'
+           '<sheetData>' + "".join(zeilen_xml) + '</sheetData>'
+           '<autoFilter ref="A1:%s%d"/>' % (letzte_spalte, letzte_zeile) + validierung +
+           '</worksheet>')
+    return xml, letzte_spalte, letzte_zeile
+
+
+def _blattname(name, vergeben=()):
+    """Gültiger Blattname: höchstens 31 Zeichen, ohne : \ / ? * [ ], eindeutig."""
+    basis = re.sub(r"[:\\/?*\[\]]", "_", _XML_UNGUELTIG.sub("", str(name)))[:31].strip("'") or "Blatt"
+    kandidat, n = basis, 2
+    while kandidat.lower() in [v.lower() for v in vergeben]:
+        kandidat = "%s_%d" % (basis[:28], n)
+        n += 1
+    return kandidat
+
+
+def schreibe_xlsx_mappe(pfad, blaetter, namen=None):
+    """Schreibt eine .xlsx mit einem oder mehreren Blättern (ohne Zusatzbibliothek).
+
+    Texte werden als Text gespeichert (Excel wandelt '1.06' NICHT in ein Datum um), Zahlen als
+    Zahlen. Kopfzeile fett/farbig, fixiert, mit Autofilter, Spaltenbreiten angepasst.
+    blaetter: Liste von dict mit den Schlüsseln
+      name, spalten, zeilen und optional
+      zahlenformat       {Spalte: Dezimalstellen (1 oder 2)} für Gleitkommawerte
+      freigabe_spalte    Name einer Spalte mit Auswahlliste J/N
+      validierungen      {Spalte: Listenquelle}, z. B. {"OKS_Tausch": "OKS_Liste"} (definierter Name)
+      markiere           Funktion zeile -> bool; markierte Zeilen werden hellgelb hinterlegt
+    namen: Liste von (Name, Bezug) für definierte Namen, z. B. ("OKS_Liste", "'Stempel'!$C$2:$C$50")
+    """
+    vergeben, blatt_xml, definierte = [], [], []
+    for i, b in enumerate(blaetter):
+        name = _blattname(b["name"], vergeben)
+        vergeben.append(name)
+        xml, letzte_spalte, letzte_zeile = _blatt_xml(
+            b["spalten"], b["zeilen"], b.get("zahlenformat"), b.get("freigabe_spalte"),
+            b.get("markiere"), b.get("validierungen"))
+        blatt_xml.append(xml)
+        bereich = "'%s'!$A$1:$%s$%d" % (name.replace("'", "''"), letzte_spalte, letzte_zeile)
+        definierte.append('<definedName name="_xlnm._FilterDatabase" localSheetId="%d" hidden="1">%s'
+                          '</definedName>' % (i, _xml_text(bereich)))
+    for n, bezug in (namen or []):
+        definierte.append('<definedName name="%s">%s</definedName>' % (_xml_text(n), _xml_text(bezug)))
+
     content_types = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
                      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
                      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
                      '<Default Extension="xml" ContentType="application/xml"/>'
                      '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
-                     '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+                     + "".join('<Override PartName="/xl/worksheets/sheet%d.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' % (i + 1)
+                               for i in range(len(blatt_xml))) +
                      '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
                      '</Types>')
     rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
             '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
             '</Relationships>')
-    # Blattname: höchstens 31 Zeichen, ohne : \ / ? * [ ]
-    blattname = re.sub(r"[:\\/?*\[\]]", "_", _XML_UNGUELTIG.sub("", str(blattname)))[:31].strip("'") or "Blatt1"
-    filter_bereich = "'%s'!$A$1:$%s$%d" % (blattname.replace("'", "''"), letzte_spalte, letzte_zeile)
     workbook = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-                '<workbook xmlns="' + _NS_MAIN + '" xmlns:r="' + _NS_REL + '">'
-                '<sheets><sheet name="%s" sheetId="1" r:id="rId1"/></sheets>'
-                '<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">%s'
-                '</definedName></definedNames></workbook>'
-                % (_xml_text(blattname), _xml_text(filter_bereich)))
+                '<workbook xmlns="' + _NS_MAIN + '" xmlns:r="' + _NS_REL + '"><sheets>'
+                + "".join('<sheet name="%s" sheetId="%d" r:id="rId%d"/>' % (_xml_text(n), i + 1, i + 1)
+                          for i, n in enumerate(vergeben)) +
+                '</sheets><definedNames>' + "".join(definierte) + '</definedNames></workbook>')
     wb_rels = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-               '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
-               '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
-               '</Relationships>')
+               + "".join('<Relationship Id="rId%d" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet%d.xml"/>' % (i + 1, i + 1)
+                         for i in range(len(blatt_xml))) +
+               '<Relationship Id="rId%d" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+               '</Relationships>' % (len(blatt_xml) + 1))
     ordner = os.path.dirname(pfad)
     if ordner and not os.path.isdir(ordner):
         os.makedirs(ordner)
@@ -821,7 +909,16 @@ def schreibe_xlsx(pfad, blattname, spalten, zeilen, zahlenformat=None, freigabe_
         z.writestr("xl/workbook.xml", workbook)
         z.writestr("xl/_rels/workbook.xml.rels", wb_rels)
         z.writestr("xl/styles.xml", _STYLES_XML)
-        z.writestr("xl/worksheets/sheet1.xml", blatt)
+        for i, xml in enumerate(blatt_xml):
+            z.writestr("xl/worksheets/sheet%d.xml" % (i + 1), xml)
+
+
+def schreibe_xlsx(pfad, blattname, spalten, zeilen, zahlenformat=None, freigabe_spalte=None,
+                  markiere=None):
+    """Schreibt eine .xlsx mit einem Blatt (siehe schreibe_xlsx_mappe)."""
+    schreibe_xlsx_mappe(pfad, [{"name": blattname, "spalten": spalten, "zeilen": zeilen,
+                                "zahlenformat": zahlenformat, "freigabe_spalte": freigabe_spalte,
+                                "markiere": markiere}])
 
 
 def _zahl_als_text(v):
@@ -900,10 +997,12 @@ def lese_xlsx(pfad, blatt=None):
     return zeilen
 
 
-def lese_tabelle(pfad):
-    """Liest .xlsx/.xlsm oder .csv als Liste von Zeilen (Listen von Strings), erste Zeile = Kopf."""
+def lese_tabelle(pfad, blatt=None):
+    """Liest .xlsx/.xlsm oder .csv als Liste von Zeilen (Listen von Strings), erste Zeile = Kopf.
+
+    Bei Excel-Dateien: Blatt mit dem Namen `blatt`, sonst das erste Blatt."""
     if pfad.lower().endswith((".xlsx", ".xlsm")):
-        return lese_xlsx(pfad)
+        return lese_xlsx(pfad, blatt)
     with open(pfad, "rb") as f:
         text = dekodiere(f.read()).lstrip("﻿")
     zeilen = text.splitlines()
@@ -958,8 +1057,10 @@ def ist_freigabe(wert):
 
 
 def lese_zuordnungsliste(pfad):
-    """Liest die (geprüfte) Zuordnungsliste (.xlsx oder .csv). Gibt (zeilen, meldungen)."""
-    tabelle = lese_tabelle(pfad)
+    """Liest die (geprüfte) Zuordnungsliste (.xlsx oder .csv). Gibt (zeilen, meldungen).
+
+    Aus einer Excel-Datei wird das Blatt "Zuordnung" gelesen (Rückfall: erstes Blatt)."""
+    tabelle = lese_tabelle(pfad, "Zuordnung")
     if not tabelle:
         return [], ["Zuordnungsliste ist leer."]
     kopf = [(k or "").strip() for k in tabelle[0]]
@@ -1406,7 +1507,15 @@ def _haupt(eingaben, log):
         log("Raumanlage: %d Stempel ohne Raum wären Kandidaten (nur ohne Treffer, geschlossene "
             "Umgrenzung nötig)." % len(anzahl_neu_kandidaten))
 
-    _ausgabe_listen(ausgabe, zeit, zuordnungsliste, pruefliste, log, formate)
+    # Zusatzblätter für die Nacharbeit: alle Stempel und alle Räume mit Status
+    raum_je_oks = {s.oks: r["id"] for s, r, _z, _e in jobs}
+    oks_je_raum = {r["id"]: s.oks for s, r, _z, _e in jobs}
+    raeume_blatt = [{"id": r["id"], "ebene": r["ebene"], "nummer": r["nummer"], "name": r["name"],
+                     "flaeche": round(r["flaeche"], 2), "platziert": r["platziert"],
+                     "oks_aktuell": _param_text(r["element"], PARAM_OKS)} for r in raeume_info]
+    zusatz = {"stempel": baue_stempel_zeilen(stempel_liste, ebene_von_code, raum_je_oks),
+              "raeume": baue_raeume_zeilen(raeume_blatt, oks_je_raum)}
+    _ausgabe_listen(ausgabe, zeit, zuordnungsliste, pruefliste, log, formate, zusatz)
 
 
 # --- Revit-Hilfsfunktionen ---------------------------------------------------
@@ -1860,17 +1969,44 @@ def _schreibe_liste_geprueft(ausgabe, name, schreiber, log):
     return None
 
 
-def _ausgabe_listen(ausgabe, zeit, zuordnungsliste, pruefliste, log, formate=("xlsx",)):
+def _ausgabe_listen(ausgabe, zeit, zuordnungsliste, pruefliste, log, formate=("xlsx",), zusatz=None):
+    """Schreibt Zuordnungsliste und Prüfliste. zusatz: dict(stempel=..., raeume=...) für Zusatzblätter."""
     log.kopf("Listen")
     ausgabe = os.path.normpath(ausgabe)
     log("Ausgabeordner: %s" % ausgabe)
 
-    def liste(titel, name, blatt, spalten, zeilen, textspalten, zahlenformat, freigabe, markiere):
+    def zuordnung_xlsx(pfad):
+        blaetter = [{"name": "Zuordnung", "spalten": ZUORDNUNG_SPALTEN, "zeilen": zuordnungsliste,
+                     "zahlenformat": ZUORDNUNG_ZAHLENFORMAT, "freigabe_spalte": "Freigabe",
+                     "markiere": lambda z: z.get("Status") == "unsicher", "validierungen": {}}]
+        namen = []
+        if zusatz and zusatz.get("stempel"):
+            n = len(zusatz["stempel"]) + 1
+            oks_spalte = _spaltenbuchstabe(STEMPEL_SPALTEN.index("OKS"))
+            namen.append(("OKS_Liste", "'Stempel'!$%s$2:$%s$%d" % (oks_spalte, oks_spalte, n)))
+            blaetter[0]["validierungen"]["OKS_Tausch"] = "OKS_Liste"
+        if zusatz and zusatz.get("raeume"):
+            n = len(zusatz["raeume"]) + 1
+            id_spalte = _spaltenbuchstabe(RAEUME_SPALTEN.index("Raum_ID"))
+            namen.append(("RaumID_Liste", "'Räume'!$%s$2:$%s$%d" % (id_spalte, id_spalte, n)))
+            blaetter[0]["validierungen"]["Raum_ID"] = "RaumID_Liste"
+        if zusatz and zusatz.get("stempel") is not None:
+            blaetter.append({"name": "Stempel", "spalten": STEMPEL_SPALTEN, "zeilen": zusatz["stempel"],
+                             "zahlenformat": {"Flaeche": 2},
+                             "markiere": lambda z: z.get("Status") != "zugeordnet"})
+        if zusatz and zusatz.get("raeume") is not None:
+            blaetter.append({"name": "Räume", "spalten": RAEUME_SPALTEN, "zeilen": zusatz["raeume"],
+                             "zahlenformat": {"Flaeche": 2},
+                             "markiere": lambda z: z.get("Status") == "ohne Stempel"})
+        schreibe_xlsx_mappe(pfad, blaetter, namen)
+
+    def liste(titel, name, blatt, spalten, zeilen, textspalten, zahlenformat, freigabe, markiere, xlsx=None):
         log("%s:" % titel)
         if "xlsx" in formate:
             _schreibe_liste_geprueft(
                 ausgabe, name + ".xlsx",
-                lambda pfad: schreibe_xlsx(pfad, blatt, spalten, zeilen, zahlenformat, freigabe, markiere), log)
+                xlsx or (lambda pfad: schreibe_xlsx(pfad, blatt, spalten, zeilen, zahlenformat, freigabe, markiere)),
+                log)
         if "csv" in formate:
             _schreibe_liste_geprueft(
                 ausgabe, name + ".csv",
@@ -1879,7 +2015,7 @@ def _ausgabe_listen(ausgabe, zeit, zuordnungsliste, pruefliste, log, formate=("x
     if zuordnungsliste is not None:
         liste("Zuordnungsliste", "Zuordnungsliste_%s" % zeit, "Zuordnung", ZUORDNUNG_SPALTEN,
               zuordnungsliste, ZUORDNUNG_TEXTSPALTEN, ZUORDNUNG_ZAHLENFORMAT, "Freigabe",
-              lambda z: z.get("Status") == "unsicher")
+              lambda z: z.get("Status") == "unsicher", xlsx=zuordnung_xlsx)
     liste("Prüfliste", "Pruefliste_%s" % zeit, "Prüfliste", PRUEF_SPALTEN, pruefliste,
           PRUEF_TEXTSPALTEN, {}, None, None)
     log.kopf("Prüfliste (Zusammenfassung)")

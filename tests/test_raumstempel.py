@@ -634,6 +634,96 @@ class TestXlsx(unittest.TestCase):
             wb.close()
 
 
+class TestZusatzblaetter(unittest.TestCase):
+    def _stempel(self):
+        return [rs.Stempel("A-G01-_2", nummer="2.02", name="Flur", flaeche=12.5, x=0, y=0, quelle="a.csv"),
+                rs.Stempel("A-G01-_1", nummer="2.01", name="Büro", flaeche=17.0, x=0, y=0, quelle="a.csv"),
+                rs.Stempel("A-G04-_1", nummer="n.v.", name="TH", flaeche=11.4, x=0, y=0, quelle="a.csv")]
+
+    def test_stempelzeilen(self):
+        z = rs.baue_stempel_zeilen(self._stempel(), {"G01": "1. OG"}, {"A-G01-_1": 3258000})
+        self.assertEqual([r["OKS"] for r in z], ["A-G01-_1", "A-G01-_2", "A-G04-_1"])   # nach Geschoss, OKS
+        self.assertEqual([r["Status"] for r in z], ["zugeordnet", "frei", "Ebene nicht verarbeitet"])
+        self.assertEqual(z[0]["Raum_ID_Vorschlag"], 3258000)
+        self.assertEqual((z[0]["Ebene"], z[2]["Ebene"]), ("1. OG", ""))
+
+    def test_raumzeilen(self):
+        raeume = [{"id": 2, "ebene": "EG", "nummer": "n.2", "name": "Raum", "flaeche": 5.0, "platziert": True,
+                   "oks_aktuell": ""},
+                  {"id": 1, "ebene": "EG", "nummer": "n.1", "name": "Raum", "flaeche": 6.0, "platziert": True,
+                   "oks_aktuell": "A-G00-_1"},
+                  {"id": 3, "ebene": None, "nummer": "", "name": "", "flaeche": 0.0, "platziert": False}]
+        z = rs.baue_raeume_zeilen(raeume, {1: "A-G00-_1"})
+        self.assertEqual([r["Raum_ID"] for r in z], [3, 1, 2])
+        self.assertEqual({r["Raum_ID"]: r["Status"] for r in z},
+                         {1: "zugeordnet", 2: "ohne Stempel", 3: "nicht platziert"})
+        self.assertEqual(z[1]["Stempel_Vorschlag"], "A-G00-_1")
+
+    def _mappe(self, d):
+        pfad = os.path.join(d, "m.xlsx")
+        stempel = rs.baue_stempel_zeilen(self._stempel(), {"G01": "1. OG"}, {"A-G01-_1": 11})
+        raeume = rs.baue_raeume_zeilen(
+            [{"id": 11, "ebene": "1. OG", "nummer": "n.1", "name": "Raum", "flaeche": 17.2, "platziert": True,
+              "oks_aktuell": ""}], {11: "A-G01-_1"})
+        zuordnung = [{"Ebene": "1. OG", "OKS": "A-G01-_1", "Raum_ID": 11, "Status": "sicher", "Freigabe": "J"}]
+        blaetter = [
+            {"name": "Zuordnung", "spalten": rs.ZUORDNUNG_SPALTEN, "zeilen": zuordnung, "freigabe_spalte": "Freigabe",
+             "validierungen": {"OKS_Tausch": "OKS_Liste", "Raum_ID": "RaumID_Liste"}},
+            {"name": "Stempel", "spalten": rs.STEMPEL_SPALTEN, "zeilen": stempel, "zahlenformat": {"Flaeche": 2},
+             "markiere": lambda z: z["Status"] != "zugeordnet"},
+            {"name": "Räume", "spalten": rs.RAEUME_SPALTEN, "zeilen": raeume, "zahlenformat": {"Flaeche": 2}}]
+        namen = [("OKS_Liste", "'Stempel'!$C$2:$C$4"), ("RaumID_Liste", "'Räume'!$B$2:$B$2")]
+        rs.schreibe_xlsx_mappe(pfad, blaetter, namen)
+        return pfad
+
+    def test_mehrere_blaetter_lesbar(self):
+        with tempfile.TemporaryDirectory() as d:
+            pfad = self._mappe(d)
+            self.assertEqual(rs.lese_xlsx(pfad)[0][:3], ["Ebene", "OKS", "OKS_Tausch"])        # erstes Blatt
+            st = rs.lese_xlsx(pfad, "Stempel")
+            self.assertEqual(st[0], rs.STEMPEL_SPALTEN)
+            self.assertEqual(len(st), 4)
+            self.assertEqual(st[1][4], "2.01")                                                  # Text bleibt Text
+            rm = rs.lese_xlsx(pfad, "Räume")
+            self.assertEqual(rm[1][1], "11")
+
+    def test_zuordnungsliste_liest_das_blatt_zuordnung(self):
+        """Auch wenn Excel das Blatt "Stempel" an die erste Stelle verschoben hätte."""
+        with tempfile.TemporaryDirectory() as d:
+            pfad = os.path.join(d, "m.xlsx")
+            rs.schreibe_xlsx_mappe(pfad, [
+                {"name": "Stempel", "spalten": ["OKS", "Raum_ID", "Freigabe"], "zeilen": [{"OKS": "X", "Raum_ID": 1}]},
+                {"name": "Zuordnung", "spalten": ["OKS", "Raum_ID", "Freigabe"],
+                 "zeilen": [{"OKS": "A-G01-_1", "Raum_ID": 5, "Freigabe": "J"}]}])
+            zeilen, _ = rs.lese_zuordnungsliste(pfad)
+        self.assertEqual([z["Raum_ID"] for z in zeilen], [5])
+
+    def test_blattnamen(self):
+        self.assertEqual(rs._blattname("A/B:C"), "A_B_C")
+        self.assertEqual(rs._blattname("x" * 40), "x" * 31)
+        self.assertEqual(rs._blattname("Stempel", ["stempel"]), "Stempel_2")
+        self.assertEqual(rs._blattname(""), "Blatt")
+
+    def test_openpyxl_prueft_mehrblattdatei(self):
+        try:
+            import openpyxl
+        except ImportError:
+            self.skipTest("openpyxl nicht installiert")
+        with tempfile.TemporaryDirectory() as d:
+            wb = openpyxl.load_workbook(self._mappe(d))
+            self.assertEqual(wb.sheetnames, ["Zuordnung", "Stempel", "Räume"])
+            ws = wb["Zuordnung"]
+            formeln = {str(v.sqref): v.formula1 for v in ws.data_validations.dataValidation}
+            self.assertEqual(sorted(formeln.values()), ['"J,N"', "OKS_Liste", "RaumID_Liste"])
+            self.assertEqual(wb["Stempel"].auto_filter.ref, "A1:I4")
+            self.assertEqual(wb["Räume"].auto_filter.ref, "A1:H2")
+            self.assertEqual(wb["Stempel"]["C3"].value, "A-G01-_2")
+            self.assertEqual(wb["Stempel"]["A3"].fill.fgColor.rgb, "FFFFF2CC")     # frei -> markiert
+            self.assertIn("OKS_Liste", wb.defined_names)
+            self.assertEqual(wb.defined_names["OKS_Liste"].attr_text, "'Stempel'!$C$2:$C$4")
+            wb.close()
+
+
 class TestOksTausch(unittest.TestCase):
     A = rs.Stempel("A-G01-_1", nummer="2.01", name="Büro", x=0, y=0)
     B = rs.Stempel("A-G01-_2", nummer="2.02", name="Flur", x=0, y=0)
