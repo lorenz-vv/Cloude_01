@@ -146,6 +146,47 @@ class TestLauf1(AblaufBasis):
         self.assertEqual(self.modell.doc.transaktionen, [])
 
 
+class TestRaumtags(AblaufBasis):
+    def _stempel_im_nachbarraum(self):
+        """Der Büro-Stempel liegt im Treppenhaus-Raum, daneben steht der Raumtag des Büros."""
+        stempel_csv(os.path.join(self.ordner, "Stempel.csv"), [
+            ("100049_004_A_G00.dwg", "20.20", "Büro", "1.01 ", "100049-004-A-G00-_01", 4.0 - VERSATZ_M, 5.0),
+            ("100049_004_A_G00.dwg", "3.90", "Aufzug", "n.v.", "100049-004-A-G00-_02", 4.5 - VERSATZ_M, 1.0),
+            ("100049_004_A_G00.dwg", "32.50", "Treppenhaus", "n.v.", "100049-004-A-G00-_03", 2.0 - VERSATZ_M, 6.0),
+        ])
+
+    def test_tag_zieht_stempel_in_den_richtigen_raum(self):
+        self._stempel_im_nachbarraum()
+        self.modell.raumtag(self.buero, 4.3, 5.2)
+        log = self.lauf()
+        self.assertNotIn("FEHLER", log)
+        self.assertIn("Raumtags im Modell gelesen: 1", log)
+        tab = rs.lese_xlsx(self.liste(), "Zuordnung")
+        z = {r[1]: dict(zip(tab[0], r)) for r in tab[1:]}
+        self.assertEqual(int(z["100049-004-A-G00-_01"]["Raum_ID"]), self.buero.Id.Value)
+        self.assertEqual(z["100049-004-A-G00-_01"]["Methode"], "Raumtag")
+        self.assertEqual(int(z["100049-004-A-G00-_03"]["Raum_ID"]), self.th.Id.Value)
+
+    def test_raumtags_abschaltbar(self):
+        self._stempel_im_nachbarraum()
+        self.modell.raumtag(self.buero, 4.3, 5.2)
+        e = eingaben(self.ordner, self.ausgabe) + [False, 1.5]
+        log = "\n".join(rs.haupt(e))
+        self.assertNotIn("Raumtags im Modell", log)
+        tab = rs.lese_xlsx(self.liste(), "Zuordnung")
+        self.assertNotIn("Raumtag", [r[tab[0].index("Methode")] for r in tab[1:]])
+
+    def test_tag_ohne_stempel_kommt_in_die_pruefliste(self):
+        self.modell.raumtag(self.leer_raum_tag_ziel(), 7.5, 7.5)
+        log = self.lauf()
+        self.assertNotIn("FEHLER", log)
+        tab = rs.lese_xlsx(self.liste().replace("Zuordnungsliste_", "Pruefliste_"))
+        self.assertIn("Raumtag ohne Stempel", [r[0] for r in tab[1:]])
+
+    def leer_raum_tag_ziel(self):
+        return self.th
+
+
 class TestLauf2(AblaufBasis):
     def setUp(self):
         AblaufBasis.setUp(self)

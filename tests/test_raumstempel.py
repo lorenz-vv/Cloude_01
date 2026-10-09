@@ -391,6 +391,43 @@ class TestZuordnung(unittest.TestCase):
         self.assertEqual(e["raeume_ohne_stempel"], [1])
 
 
+class TestRaumtags(unittest.TestCase):
+    def test_naechster_tag_im_radius(self):
+        tags = [{"raum_id": 1, "pos": (0.0, 0.0)}, {"raum_id": 2, "pos": (3.0, 0.0)}]
+        e = rs.finde_tag_raeume({0: (0.5, 0.0), 1: (2.0, 0.0), 2: (9.0, 9.0)}, tags, 1.5)
+        self.assertEqual(e[0][0], 1)
+        self.assertEqual(e[1][0], 2)
+        self.assertNotIn(2, e)                       # kein Tag im Radius
+
+    def test_tag_hat_vorrang_vor_position(self):
+        """Stempel liegt im Nachbarraum 2, der Tag steht aber im Raum 1."""
+        stempel = [_st("Büro", 20.0), _st("Flur", 30.0)]
+        raeume = {1: {"flaeche": 20.0, "pos": None}, 2: {"flaeche": 30.0, "pos": None}}
+        e = rs.ordne_zu(stempel, raeume, {0: [2], 1: [2]}, tag_raum={0: (1, 0.5)})
+        zu = {z.stempel_idx: z for z in e["zuordnungen"]}
+        self.assertEqual((zu[0].raum_id, zu[0].methode, zu[0].status), (1, "Raumtag", "sicher"))
+        self.assertEqual((zu[1].raum_id, zu[1].methode), (2, "Position+Fläche"))
+
+    def test_mehrere_stempel_am_tag_der_naechste_gewinnt_unsicher(self):
+        stempel = [_st("A", 20.0), _st("B", 20.0)]
+        raeume = {1: {"flaeche": 20.0, "pos": None}}
+        e = rs.ordne_zu(stempel, raeume, {}, tag_raum={0: (1, 0.8), 1: (1, 0.3)})
+        z = e["zuordnungen"][0]
+        self.assertEqual((z.stempel_idx, z.methode, z.status), (1, "Raumtag", "unsicher"))
+        self.assertEqual(e["stempel_ohne_raum"], [0])
+
+    def test_tag_mit_stark_abweichender_flaeche_ist_unsicher(self):
+        e = rs.ordne_zu([_st("A", 10.0)], {1: {"flaeche": 30.0, "pos": None}}, {}, tag_raum={0: (1, 0.5)})
+        self.assertEqual(e["zuordnungen"][0].status, "unsicher")
+
+    def test_einstellungen(self):
+        c = rs.Einstellungen([])
+        self.assertEqual((c.raumtags, c.tag_radius_m), (True, 1.5))
+        e = [""] * 17 + [False, 2]
+        c = rs.Einstellungen([e])
+        self.assertEqual((c.raumtags, c.tag_radius_m), (False, 2.0))
+
+
 class TestSchreiben(unittest.TestCase):
     def test_schreibvorgaben(self):
         s = rs.Stempel("100049-004-A-G01-_15", nummer="4.06b ", name=" Büro ", flaeche=1, x=0, y=0)

@@ -98,6 +98,7 @@ class BuiltInParameter(object):
 
 class BuiltInCategory(object):
     OST_Rooms = "OST_Rooms"
+    OST_RoomTags = "OST_RoomTags"
 
 
 class Room(Element):
@@ -184,6 +185,15 @@ class ImportInstance(Element):
         return types.SimpleNamespace(Min=XYZ(x0, y0, 0), Max=XYZ(x1, y1, 10))
 
 
+class RoomTag(Element):
+    """Raumtag: verweist auf einen Raum, kein eigener Raum."""
+
+    def __init__(self, raum, x_m, y_m):
+        Element.__init__(self, "Raumtag")
+        self.Room = raum
+        self.TagHeadPosition = XYZ(x_m / M_JE_FUSS, y_m / M_JE_FUSS, 0.0)
+
+
 # --- Dokument -----------------------------------------------------------------------------------
 class FilteredElementCollector(object):
     def __init__(self, doc):
@@ -191,7 +201,8 @@ class FilteredElementCollector(object):
         self._liste = list(doc.elemente)
 
     def OfCategory(self, bic):
-        self._liste = [e for e in self._liste if isinstance(e, Room)] if bic == BuiltInCategory.OST_Rooms else []
+        klasse = {BuiltInCategory.OST_Rooms: Room, BuiltInCategory.OST_RoomTags: RoomTag}.get(bic)
+        self._liste = [e for e in self._liste if klasse and isinstance(e, klasse)]
         return self
 
     def WhereElementIsNotElementType(self):
@@ -368,6 +379,11 @@ class FakeModell(object):
         r = Room(self.doc, name, nummer, self.ebenen[ebene], rechteck_m, phase or self.bestand, **kw)
         self.doc.fuege_hinzu(r)
         return r
+
+    def raumtag(self, raum, x_m, y_m):
+        t = RoomTag(raum, x_m, y_m)
+        self.doc.fuege_hinzu(t)
+        return t
 
     def verknuepfung(self, dateiname, ebene, **kw):
         t = CADLinkType(dateiname)

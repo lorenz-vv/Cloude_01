@@ -58,6 +58,13 @@ das Protokoll „CAD-Instanzen im Modell: 0 …“ bzw. die Namen, die es gefund
   Texte (z. B. Raumnummer `1.06`) stehen als **Text**, Zahlen als Zahlen. Es gibt **keine Datumsprobleme**
   mehr. Kopfzeile fixiert, Filter gesetzt, Spalten angepasst, „unsichere“ Zeilen hellgelb, in der Spalte
   **Freigabe** eine Auswahlliste `J`/`N`.
+* **Raumtags (Eingabe 17/18):** Liegt der Stempel außerhalb seines Raums (z. B. im Treppenhaus), setze in
+  Revit einen **Raumtag** des richtigen Raums neben den alten Stempeltext (höchstens 1,5 m daneben, der
+  Radius ist Eingabe 18). Das Skript nimmt dann den Raum des **nächstgelegenen Tags** (Methode `Raumtag`);
+  das hat Vorrang vor Punkt-in-Raum und Fläche. Status „unsicher“, wenn mehrere Stempel am selben Tag
+  liegen oder die Fläche um mehr als die Obergrenze (Eingabe 7) abweicht. Die Prüfliste nennt
+  „Raumtag ohne Stempel“. Es zählen nur Tags von Räumen der Phase „Bestand“ auf der Ebene des Stempels.
+  Eingabe 17 = `false` schaltet das ab.
 * Eingabe 16 (Ausgabeformat): `"xlsx"` (Standard), `"csv"` oder `"beides"`. Die CSV-Variante schreibt
   Nummern als `="1.06"` und Flächen mit Dezimalkomma (öffnet ebenfalls ohne Datumsproblem).
 * Bearbeiten musst du nur die Spalten **Freigabe** (`J`/`N`) und bei Bedarf **Raum_ID**. Normal
@@ -197,7 +204,9 @@ Revit 2025 → Registerkarte *Verwalten* → **Dynamo** → *Neu*.
      [],                                              // 13 manuelle Verknüpfungszuordnung
      true,                                            // 14 Parameter bei Bedarf anlegen
      "_Bestand",                                      // 15 Zeilen mit diesem Dateinamen-Ende ignorieren ("-" = keine)
-     "xlsx"                                           // 16 Ausgabeformat der Listen: "xlsx", "csv" oder "beides"
+     "xlsx",                                          // 16 Ausgabeformat der Listen: "xlsx", "csv" oder "beides"
+     true,                                            // 17 Raumtags verwenden
+     1.5                                              // 18 Suchradius Raumtag -> Stempel in m
    ];
    ```
 3. **Watch-Node** (`Watch`) aus der Bibliothek holen.
@@ -209,7 +218,7 @@ Für **Lauf 2** im Code-Block nur `true` an Position 1 auf `false` ändern (Exce
 und schließen) und erneut ausführen. Position 11 bleibt leer: Lauf 2 nimmt die neueste Zuordnungsliste
 im Ausgabeordner und erzeugt keine neue. Danach Position 1 wieder auf `true` setzen.
 
-Alternativ lassen sich alle 17 Werte auch einzeln über 17 Eingänge verbinden (IN[0] … IN[16]). Dann
+Alternativ lassen sich alle 19 Werte auch einzeln über 19 Eingänge verbinden (IN[0] … IN[18]). Dann
 müssen alle Eingänge belegt sein; für „leer“ einen Code-Block mit `null;` oder `"";` verwenden.
 
 ## 4. Ablauf in Revit

@@ -44,6 +44,8 @@ Eingaben (IN[...]) - Reihenfolge im Dynamo-Graph
 15  Ausschluss: Zeilen, deren Dateiname auf diesen Text endet (Standard "_Bestand",
     externe Referenzen); "-" = nichts ausschließen
 16  Ausgabeformat der Listen: "xlsx" (Standard), "csv" oder "beides"
+17  Raumtags verwenden (True/False, Standard True)
+18  Suchradius Raumtag -> Stempel in m                    (Standard 1.5)
 
 Alternativ können alle 17 Werte als EINE Liste an IN[0] übergeben werden
 (ein Code-Block-Node, siehe ANLEITUNG.md). Leere Werte ("" oder null) = Standard.
@@ -509,8 +511,28 @@ def abweichung_prozent(stempel_flaeche, raum_flaeche):
     return abs(stempel_flaeche - raum_flaeche) / raum_flaeche * 100.0
 
 
+def finde_tag_raeume(punkte, tags, radius):
+    """Raum des nächstgelegenen Raumtags je Stempel (nur Tags innerhalb des Radius).
+
+    punkte: dict stempel_idx -> (x, y); tags: Liste von dict(raum_id, pos=(x, y)); radius in
+    derselben Einheit wie die Positionen. Gibt dict stempel_idx -> (raum_id, abstand) zurück.
+    """
+    erg = {}
+    for si, (x, y) in punkte.items():
+        beste = None
+        for t in tags:
+            if t.get("pos") is None:
+                continue
+            d = math.hypot(x - t["pos"][0], y - t["pos"][1])
+            if d <= radius and (beste is None or d < beste[1]):
+                beste = (t["raum_id"], d)
+        if beste is not None:
+            erg[si] = beste
+    return erg
+
+
 def ordne_zu(stempel, raeume, treffer, positionen=None,
-             tol_sicher=5.0, tol_max=15.0, max_abstand=None):
+             tol_sicher=5.0, tol_max=15.0, max_abstand=None, tag_raum=None):
     """Ordnet die Stempel EINER Ebene den Räumen derselben Ebene zu.
 
     stempel:   Liste von Stempel (Index = Stempel-Index)
@@ -518,8 +540,12 @@ def ordne_zu(stempel, raeume, treffer, positionen=None,
     treffer:   dict stempel_idx -> [raum_id, ...] (Punkt-in-Raum-Test)
     positionen: dict stempel_idx -> (x,y) in derselben Einheit wie raeume[..]['pos']
     max_abstand: größter erlaubter Abstand bei reiner Flächenzuordnung (None = aus)
+    tag_raum:  dict stempel_idx -> (raum_id, abstand) vom nächstgelegenen Raumtag (optional)
 
     Stufen:
+      0. Raumtag: liegt ein Revit-Raumtag nahe am Stempel, gehört der Stempel zum Raum dieses
+         Tags (stärkstes Signal). Konkurrieren mehrere Stempel um einen Raum, gewinnt der nächste
+         (Status "unsicher"); die übrigen laufen durch die weiteren Stufen.
       1. Position: in jedem Raum gewinnt der Stempel mit der besten
          Flächenübereinstimmung (<= tol_max). Weitere Stempel im Raum werden
          freigegeben (Fremdstempel, z. B. Stempel anderer Räume im Treppenhaus).
@@ -550,8 +576,31 @@ def ordne_zu(stempel, raeume, treffer, positionen=None,
                 treffer_je_raum.setdefault(rid, []).append(si)
     raeume_mehrfach = {rid: sorted(sis) for rid, sis in treffer_je_raum.items() if len(sis) > 1}
 
+    # Stufe 0: Raumtag
+    je_tagraum = {}
+    for si, (rid, d) in (tag_raum or {}).items():
+        if rid in raeume:
+            je_tagraum.setdefault(rid, []).append((d, si))
+    for rid in sorted(je_tagraum):
+        kand = sorted(je_tagraum[rid])
+        d, si = kand[0]
+        a = abw(si, rid)
+        bem = "Raumtag %.1f m neben dem Stempel" % (d * METER_JE_FUSS)
+        if si not in {x for x in treffer_je_raum.get(rid, [])}:
+            bem += " (Stempel liegt außerhalb des Raums)"
+        status = "sicher"
+        if len(kand) > 1:
+            status = "unsicher"
+            bem += "; %d Stempel am Raumtag" % len(kand)
+        if a is not None and a > tol_max:
+            status = "unsicher"
+            bem += "; Fläche weicht um %.1f %% ab" % a
+        vergeben(Zuordnung(si, rid, "Raumtag", a, status, bem))
+
     # Stufe 1: Position (+ Fläche, wenn mehrere Stempel im Raum)
     for rid in sorted(treffer_je_raum):
+        if rid in raum_zu:
+            continue
         sis = sorted(treffer_je_raum[rid])
         kandidaten = []
         for si in sis:
@@ -1302,7 +1351,7 @@ def _eid(element_id):
 
 
 class Einstellungen(object):
-    """Die Eingaben des Code-Blocks (Positionen 0 bis 16) mit Standardwerten.
+    """Die Eingaben des Code-Blocks (Positionen 0 bis 18) mit Standardwerten.
 
     Position 2 (früher "Fehlende Räume anlegen") ist entfallen und bleibt frei, damit der
     Code-Block unverändert weiter funktioniert.
@@ -1334,6 +1383,8 @@ class Einstellungen(object):
         if self.ausschluss_suffix.strip().lower() in ("-", "keine"):
             self.ausschluss_suffix = ""
         ausgabeformat = str(_eingabe(e, 16, "xlsx")).strip().lower()
+        self.raumtags = bool(_eingabe(e, 17, True))
+        self.tag_radius_m = float(_eingabe(e, 18, 1.5))
         self.formate = {"xlsx": ("xlsx",), "excel": ("xlsx",), "csv": ("csv",),
                         "beides": ("xlsx", "csv"), "both": ("xlsx", "csv")}.get(ausgabeformat, ("xlsx",))
 
@@ -1459,9 +1510,11 @@ def _lauf1(rv, cfg, log, pruef):
     ebene_von_code = _bestimme_ebenen(cfg, stempel_liste, alle_ebenen, raeume_je_ebene, log, pruef)
 
     verknuepfungen = _sammle_verknuepfungen(rv)
+    raumtags = _sammle_raumtags(rv, log) if cfg.raumtags else []
     vorschlaege, n_treffer, n_stempel = [], 0, 0
     for code, ebene in sorted(ebene_von_code.items()):
-        v, t, n = _ordne_ebene_zu(rv, cfg, code, ebene, stempel_liste, raeume_info, verknuepfungen, log, pruef)
+        v, t, n = _ordne_ebene_zu(rv, cfg, code, ebene, stempel_liste, raeume_info, verknuepfungen, raumtags,
+                               log, pruef)
         vorschlaege.extend(v)
         n_treffer += t
         n_stempel += n
@@ -1562,7 +1615,7 @@ def _bestimme_ebenen(cfg, stempel_liste, alle_ebenen, raeume_je_ebene, log, prue
     return ebene_von_code
 
 
-def _ordne_ebene_zu(rv, cfg, code, ebene, stempel_liste, raeume_info, verknuepfungen, log, pruef):
+def _ordne_ebene_zu(rv, cfg, code, ebene, stempel_liste, raeume_info, verknuepfungen, raumtags, log, pruef):
     """Stempel einer Ebene den Räumen zuordnen. Gibt (vorschlaege, n_treffer, n_stempel) zurück."""
     DB = rv.DB
     st_ebene = [s for s in stempel_liste if s.code == code]
@@ -1602,8 +1655,22 @@ def _ordne_ebene_zu(rv, cfg, code, ebene, stempel_liste, raeume_info, verknuepfu
         log("WARNUNG: niedrige Trefferquote - Versatz der Verknüpfung oder falsche Einheit prüfen!")
 
     raeume_dict = {r["id"]: {"flaeche": r["flaeche"], "pos": r["pos"]} for r in raeume_ebene}
+    tag_raum = {}
+    if cfg.raumtags:
+        ids = set(raeume_dict)
+        tags_ebene = [t for t in raumtags if t["raum_id"] in ids]
+        tag_raum = finde_tag_raeume(punkte, tags_ebene, cfg.tag_radius_m / METER_JE_FUSS)
+        log("Raumtags auf dieser Ebene: %d | Stempel mit Raumtag in %.1f m: %d von %d"
+            % (len(tags_ebene), cfg.tag_radius_m, len(tag_raum), len(st_ebene)))
+        for t in tags_ebene:
+            if t["pos"] is not None and not any(
+                    math.hypot(x - t["pos"][0], y - t["pos"][1]) <= cfg.tag_radius_m / METER_JE_FUSS
+                    for x, y in punkte.values()):
+                r = next(r for r in raeume_ebene if r["id"] == t["raum_id"])
+                pruef("Raumtag ohne Stempel", ebene=ebene, nummer=r["nummer"], name=r["name"],
+                      raum_id=r["id"], detail="kein Stempel im Umkreis von %.1f m" % cfg.tag_radius_m)
     erg = ordne_zu(st_ebene, raeume_dict, treffer, positionen=punkte, tol_sicher=cfg.tol_sicher,
-                   tol_max=cfg.tol_max, max_abstand=cfg.max_abstand_m / METER_JE_FUSS)
+                   tol_max=cfg.tol_max, max_abstand=cfg.max_abstand_m / METER_JE_FUSS, tag_raum=tag_raum)
     raum_nach_id = {r["id"]: r for r in raeume_ebene}
     vorschlaege = []
     for z in erg["zuordnungen"]:
@@ -1880,6 +1947,30 @@ def _sammle_raeume(rv, phase_name):
         except Exception as ex:
             fehler.append("Raum %s: %s" % (_eid(r.Id), ex))
     return ergebnis, phasen, fehler
+
+
+def _sammle_raumtags(rv, log):
+    """Alle Raumtags des Modells: Liste von dict(raum_id, pos=(x, y)) (Position des Tag-Kopfes)."""
+    doc, DB = rv.doc, rv.DB
+    ergebnis, fehler = [], []
+    try:
+        sammler = DB.FilteredElementCollector(doc).OfCategory(DB.BuiltInCategory.OST_RoomTags) \
+            .WhereElementIsNotElementType()
+        for t in sammler:
+            try:
+                raum = t.Room
+                kopf = t.TagHeadPosition
+                if raum is None or kopf is None:
+                    continue
+                ergebnis.append({"raum_id": _eid(raum.Id), "pos": (kopf.X, kopf.Y)})
+            except Exception as ex:
+                fehler.append("Tag %s: %s" % (_eid(t.Id), ex))
+    except Exception as ex:
+        log("WARNUNG: Raumtags konnten nicht gelesen werden: %s" % ex)
+        return []
+    log("Raumtags im Modell gelesen: %d%s" % (len(ergebnis), (" (%d nicht lesbar, z. B. %s)"
+                                                              % (len(fehler), fehler[0])) if fehler else ""))
+    return ergebnis
 
 
 def _sammle_verknuepfungen(rv):
