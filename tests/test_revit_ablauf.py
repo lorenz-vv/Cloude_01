@@ -183,11 +183,72 @@ class TestLauf2(AblaufBasis):
         self.assertIn("nur Prüfung", log)
         self.assertEqual(self.buero.name_wert, "Raum")
 
-    def test_trockenlauf_aus_ohne_liste_bricht_ab(self):
+    def dateien(self, praefix):
+        return sorted(f for f in os.listdir(self.ausgabe) if f.startswith(praefix))
+
+    def test_lauf2_nimmt_automatisch_die_neueste_liste(self):
+        """Position 11 leer, Trockenlauf aus: kein Pfad nötig, keine neue Liste."""
+        listen_vorher = self.dateien("Zuordnungsliste_")
+        pruef_vorher = self.dateien("Pruefliste_")
         log = self.lauf(trockenlauf=False)
-        self.assertIn("FEHLER: Trockenlauf ist AUS", log)
+        self.assertIn("Modus: LAUF 2", log)
+        self.assertIn("Zuordnungsliste (neueste im Ausgabeordner)", log)
+        self.assertIn("zuletzt gespeichert am", log)
+        self.assertNotIn("FEHLER", log)
+        self.assertEqual(self.buero.name_wert, "Büro")
+        self.assertEqual(self.dateien("Zuordnungsliste_"), listen_vorher)         # keine neue Liste
+        self.assertEqual(self.dateien("Pruefliste_"), pruef_vorher)               # keine Auffälligkeiten -> keine Datei
+        self.assertIn("keine Auffälligkeiten", log)
+
+    def test_lauf2_nimmt_die_bearbeitete_liste(self):
+        """Excel speichert unter demselben Namen: Lauf 2 liest die bearbeitete Fassung."""
+        tab = rs.lese_xlsx(self.pfad, "Zuordnung")
+        zeilen = [dict(zip(tab[0], r)) for r in tab[1:]]
+        for z in zeilen:
+            if z["OKS"].endswith("_02"):
+                z["Freigabe"] = "N"
+        rs.schreibe_xlsx(self.pfad, "Zuordnung", rs.ZUORDNUNG_SPALTEN, zeilen)
+        self.lauf(trockenlauf=False)
+        self.assertEqual(self.buero.name_wert, "Büro")
+        self.assertEqual(self.aufzug.name_wert, "Raum")                           # in der Liste auf N gesetzt
+
+    def test_lauf2_ohne_liste_im_ausgabeordner(self):
+        for f in self.dateien("Zuordnungsliste_"):
+            os.remove(os.path.join(self.ausgabe, f))
+        log = self.lauf(trockenlauf=False)
+        self.assertIn("FEHLER: Im Ausgabeordner liegt keine Zuordnungsliste", log)
+        self.assertIn("Zuerst Lauf 1", log)
+        self.assertEqual(self.buero.name_wert, "Raum")
+
+    def test_lauf2_meldet_fehler_wenn_liste_in_excel_offen_ist(self):
+        name = os.path.basename(self.pfad)
+        with open(os.path.join(self.ausgabe, "~$" + name[2:]), "wb") as f:        # Excel-Sperrdatei
+            f.write(b"x")
+        log = self.lauf(trockenlauf=False)
+        self.assertIn("ist noch in Excel geöffnet", log)
+        self.assertIn(name, log)
         self.assertEqual(self.buero.name_wert, "Raum")
         self.assertFalse([x for x in self.modell.doc.transaktionen if x.name == "Raumstempel übertragen"])
+        self.assertEqual(self.modell.doc.transaktionen, [])
+
+    def test_lauf2_warnt_wenn_aeltere_liste_spaeter_gespeichert_wurde(self):
+        neuere = os.path.join(self.ausgabe, "Zuordnungsliste_29991231_235959.xlsx")   # später erzeugt ...
+        import shutil
+        shutil.copy(self.pfad, neuere)
+        import time
+        t = time.time() - 7200
+        os.utime(neuere, (t, t))                                                        # ... aber früher gespeichert
+        log = self.lauf(trockenlauf=False)
+        self.assertIn("WARNUNG: " + os.path.basename(self.pfad), log)
+        self.assertIn("Zuordnungsliste_29991231_235959.xlsx", log)
+
+    def test_expliziter_pfad_hat_vorrang(self):
+        import shutil
+        andere = os.path.join(self.tmp.name, "Zuordnungsliste_20000101_000000.xlsx")
+        shutil.copy(self.pfad, andere)
+        log = self.lauf2(liste=andere)
+        self.assertIn(andere, log)
+        self.assertNotIn("neueste im Ausgabeordner", log)
 
     def test_liste_nicht_vorhanden(self):
         log = self.lauf2(liste=os.path.join(self.tmp.name, "gibt_es_nicht.xlsx"))

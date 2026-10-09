@@ -62,7 +62,10 @@ das Protokoll „CAD-Instanzen im Modell: 0 …“ bzw. die Namen, die es gefund
   Nummern als `="1.06"` und Flächen mit Dezimalkomma (öffnet ebenfalls ohne Datumsproblem).
 * Bearbeiten musst du nur die Spalten **Freigabe** (`J`/`N`) und bei Bedarf **Raum_ID**. Normal
   speichern (`.xlsx`).
-* **Lauf 2** (Eingabe 11) nimmt die Liste als `.xlsx` **oder** `.csv`. Aus der Liste kommen nur
+* **Lauf 2** nimmt automatisch die **neueste** Liste im Ausgabeordner (`.xlsx` oder `.csv`, nach dem
+  Zeitstempel im Dateinamen). Position 11 braucht man nur, wenn eine bestimmte andere Liste gelten
+  soll. Ist die Liste noch in Excel geöffnet, meldet das Skript einen Fehler und schreibt nichts.
+  Aus der Liste kommen nur
   OKS → Raum_ID und die Freigabe. **Name und Nummer der Stempel** liest das Skript aus den
   Original-Stempeldateien (Ordner in Eingabe 0). Eine verfälschte Spalte richtet also keinen Schaden an.
 * Die Datei darf beim Lauf nicht in Excel geöffnet sein (Schreibfehler → das Skript weicht dann auf
@@ -189,7 +192,7 @@ Revit 2025 → Registerkarte *Verwalten* → **Dynamo** → *Neu*.
      10,                                              // 8  max. Abstand (Fläche) in m
      "Raum-Nr. ",                                     // 9  Präfix Raumnummer_Text
      "",                                              // 10 Firmen-Shared-Parameter-Datei (optional)
-     "",                                              // 11 geprüfte Zuordnungsliste (Lauf 2)
+     "",                                              // 11 leer lassen (Lauf 2 nimmt die neueste Liste im Ausgabeordner)
      "",                                              // 12 Ausgabeordner (leer = <Ordner>/_Ausgabe)
      [],                                              // 13 manuelle Verknüpfungszuordnung
      true,                                            // 14 Parameter bei Bedarf anlegen
@@ -202,8 +205,9 @@ Revit 2025 → Registerkarte *Verwalten* → **Dynamo** → *Neu*.
 5. Unten links die Ausführung von *Automatisch* auf **Manuell** stellen, dann **Ausführen**.
 6. **Datei → Speichern unter…** → `Raumstempel.dyn`.
 
-Für **Lauf 2** im Code-Block `true` an Position 1 auf `false` ändern und bei Position 11 den Pfad der
-geprüften Zuordnungsliste eintragen, dann erneut ausführen. Danach den Graphen speichern.
+Für **Lauf 2** im Code-Block nur `true` an Position 1 auf `false` ändern (Excel-Liste vorher speichern
+und schließen) und erneut ausführen. Position 11 bleibt leer: Lauf 2 nimmt die neueste Zuordnungsliste
+im Ausgabeordner und erzeugt keine neue. Danach Position 1 wieder auf `true` setzen.
 
 Alternativ lassen sich alle 17 Werte auch einzeln über 17 Eingänge verbinden (IN[0] … IN[16]). Dann
 müssen alle Eingänge belegt sein; für „leer“ einen Code-Block mit `null;` oder `"";` verwenden.
@@ -217,16 +221,25 @@ müssen alle Eingänge belegt sein; für „leer“ einen Code-Block mit `null;`
    Ausgabeordner ansehen. Trefferquote beachten (niedrig ⇒ Versatz/Einheit/Verknüpfung).
 4. Zuordnungsliste in Excel prüfen. Spalte **Freigabe** auf `J` (schreiben) oder `N` setzen,
    bei Bedarf `Raum_ID` korrigieren. Speichern, Excel schließen.
-5. **Lauf 2:** Pfad der Liste in IN[11], Trockenlauf = False. Geschrieben wird in **einer Transaktion**,
+5. **Lauf 2:** Trockenlauf = False (Position 11 leer; die neueste Liste im Ausgabeordner wird
+   genommen, das Protokoll nennt Dateiname und Speicherzeit). Geschrieben wird in **einer Transaktion**,
    nur bei geänderten Werten (mehrfach ausführbar). Fehlen `RaumOKS`/`Raumnummer_Text`, werden sie
    gebunden – bevorzugt aus der Firmen-Datei (IN[10] bzw. aktuell in Revit eingestellte Datei);
    nur ersatzweise in einer eigenen Datei (deutlicher Hinweis, neue GUID!).
-6. **Geschrieben wird nur mit Zuordnungsliste.** Das Protokoll nennt in der Zeile `Modus:` den Lauf:
-   `LAUF 1` (keine Liste, nichts wird geschrieben) oder `LAUF 2` (Liste aus Position 11). Ist der
-   Trockenlauf aus, aber Position 11 leer, bricht das Skript mit einer Fehlermeldung ab und schreibt
-   nichts (sonst würde es nur eine neue Vorschlagsliste erzeugen und deine bearbeitete Liste ignorieren).
-   Dasselbe passiert, wenn der Listenpfad versehentlich in Position 10 oder 12 steht. Räume werden vom
-   Skript nie angelegt: lege sie vorher in Revit an (Phase „Bestand“).
+6. **So erkennst du den Lauf:** Die Zeile `Modus:` im Protokoll nennt `LAUF 1` (Trockenlauf = true,
+   erzeugt eine neue Liste, schreibt nichts in Revit) oder `LAUF 2` (Trockenlauf = false, schreibt aus der
+   neuesten Liste). Lauf 2 erzeugt **keine** neue Zuordnungsliste; eine Prüfliste gibt es nur, wenn
+   Auffälligkeiten auftraten.
+7. **Fehlermeldungen von Lauf 2 (es wird dann nichts geschrieben):**
+   * *Liste noch in Excel geöffnet (oder gesperrt)*: speichern und Excel-Fenster schließen. Blieb nach
+     einem Absturz eine Sperrdatei `~$….xlsx` im Ordner, lösche sie.
+   * *Keine Zuordnungsliste im Ausgabeordner*: zuerst Lauf 1 starten.
+   * *Warnung „später gespeichert als die verwendete Liste“*: Du hast eine ältere Liste bearbeitet, danach
+     aber einen neuen Lauf 1 gemacht. Lösche die neuere Liste oder trage den Pfad der richtigen Liste in
+     Position 11 ein.
+   * Der Listenpfad steht versehentlich in Position 10 oder 12.
+
+   Räume werden vom Skript nie angelegt: lege sie vorher in Revit an (Phase „Bestand“).
 
 ### Prüfliste (CSV, mit Element-IDs)
 

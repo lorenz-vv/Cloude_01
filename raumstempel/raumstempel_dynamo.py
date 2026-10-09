@@ -12,9 +12,10 @@ Ablauf (immer in zwei Schritten)
  Lauf 1 (Trockenlauf = True, Position 11 leer): Es wird NICHTS in Revit geschrieben.
         Das Skript ordnet Stempel den Räumen zu und schreibt eine Zuordnungsliste
         (Excel, Blatt "Zuordnung" plus "Stempel" und "Räume") und eine Prüfliste.
- Lauf 2 (Trockenlauf = False, Position 11 = Pfad der geprüften Zuordnungsliste):
-        Es werden nur Zeilen mit Freigabe "J" geschrieben (Name, Nummer, RaumOKS,
-        Raumnummer_Text). Ohne Zuordnungsliste schreibt das Skript nie.
+ Lauf 2 (Trockenlauf = False): Das Skript nimmt die NEUESTE Zuordnungsliste im Ausgabeordner
+        (Zuordnungsliste_<Zeit>.xlsx) und schreibt nur Zeilen mit Freigabe "J" (Name, Nummer,
+        RaumOKS, Raumnummer_Text). Es erzeugt keine neue Zuordnungsliste. Ist die Liste noch in
+        Excel geöffnet, gibt es eine Fehlermeldung und es wird nichts geschrieben.
 
 Aufbau dieser Datei
 -------------------
@@ -36,7 +37,7 @@ Eingaben (IN[...]) - Reihenfolge im Dynamo-Graph
  8  Maximaler Abstand Stempel -> Raum in m (Fläche)     (Standard 10)
  9  Präfix für Raumnummer_Text                          (Standard "Raum-Nr. ")
 10  Shared-Parameter-Datei der Firma (Pfad, optional)
-11  Zuordnungsliste für Lauf 2 (Pfad, optional)
+11  Zuordnungsliste für Lauf 2 (Pfad, nur nötig, wenn NICHT die neueste Liste gelten soll)
 12  Ausgabeordner für Listen (optional, Standard <Ordner>/_Ausgabe)
 13  Manuelle Verknüpfungszuordnung, Liste "Dateiname=Verknüpfungsname" (optional)
 14  Parameter bei Bedarf anlegen                        (True/False, Standard True)
@@ -1098,11 +1099,70 @@ def lese_zuordnungsliste(pfad):
     return ergebnis, meldungen
 
 
+LISTEN_NAME = re.compile(r"^Zuordnungsliste_(\d{8}_\d{6})\.(xlsx|csv)$", re.I)
+
+
+def finde_neueste_liste(ordner):
+    """Neueste Zuordnungsliste im Ordner (nach dem Zeitstempel im Dateinamen).
+
+    Gibt (pfad oder None, alle_pfade_aufsteigend) zurück. Bei gleichem Zeitstempel hat .xlsx
+    Vorrang vor .csv. Excel-Sperrdateien (~$...) passen nicht auf das Namensmuster.
+    """
+    try:
+        namen = os.listdir(ordner)
+    except OSError:
+        return None, []
+    treffer = []
+    for n in namen:
+        m = LISTEN_NAME.match(n)
+        if m:
+            treffer.append((m.group(1), m.group(2).lower() == "xlsx", n))
+    treffer.sort()
+    pfade = [os.path.join(ordner, n) for _zeit, _xlsx, n in treffer]
+    return (pfade[-1] if pfade else None), pfade
+
+
+def spaeter_gespeicherte_listen(pfad, alle_pfade):
+    """Namen der anderen Listen, die NACH `pfad` zuletzt gespeichert wurden (Änderungszeit)."""
+    try:
+        t = os.path.getmtime(pfad)
+        return [os.path.basename(p) for p in alle_pfade if p != pfad and os.path.getmtime(p) > t]
+    except OSError:
+        return []
+
+
+def liste_in_excel_geoeffnet(pfad):
+    """True, wenn die Datei in Excel geöffnet (oder sonst zum Schreiben gesperrt) ist.
+
+    Excel legt neben die offene Datei eine Sperrdatei '~$...' (bei langen Namen ohne die ersten
+    beiden Zeichen) und sperrt die Datei gegen Schreiben. Beides wird geprüft.
+    """
+    ordner, name = os.path.split(pfad)
+    n = name.lower()
+    try:
+        for f in os.listdir(ordner or "."):
+            if f.startswith("~$"):
+                rest = f[2:].lower()
+                if len(rest) >= len(n) - 2 and n.endswith(rest):
+                    return True
+    except OSError:
+        pass
+    try:
+        with open(pfad, "r+b"):
+            pass
+    except PermissionError:
+        return True
+    except OSError:
+        pass
+    return False
+
+
 def bestimme_modus(trockenlauf, liste_pfad, sp_datei="", ausgabe_eingabe=""):
     """Welcher Lauf ist das? Gibt (beschreibung, fehlertext) zurück.
 
-    Lauf 1: keine Zuordnungsliste (Position 11), Trockenlauf an: Vorschlag, nichts wird geschrieben.
-    Lauf 2: Zuordnungsliste in Position 11: schreibt die freigegebenen Zeilen (Trockenlauf aus).
+    Lauf 1: Trockenlauf an und keine Liste in Position 11: Vorschlag, nichts wird geschrieben.
+    Lauf 2: Trockenlauf aus: schreibt die freigegebenen Zeilen der neuesten Zuordnungsliste im
+            Ausgabeordner (oder der Liste aus Position 11, falls dort ein Pfad steht).
     Ein fehlertext bedeutet: abbrechen, ohne etwas zu schreiben (häufige Verwechslungen).
     """
     tabellen = (".xlsx", ".xlsm", ".csv")
@@ -1120,10 +1180,9 @@ def bestimme_modus(trockenlauf, liste_pfad, sp_datei="", ausgabe_eingabe=""):
         return "", ("In Position 12 (Ausgabeordner) steht eine Excel-/CSV-Datei. Die Zuordnungsliste "
                     "gehört in Position 11.")
     if trockenlauf:
-        return "LAUF 1 - Vorschlag (keine Zuordnungsliste in Position 11) - es wird nichts geschrieben", None
-    return "", ("Trockenlauf ist AUS, aber in Position 11 steht keine Zuordnungsliste. Es wird nichts "
-                "geschrieben. Lauf 1: Trockenlauf = true. Lauf 2: Pfad der geprüften Zuordnungsliste "
-                "in Position 11 eintragen.")
+        return "LAUF 1 - Vorschlag (neue Zuordnungsliste) - es wird nichts in Revit geschrieben", None
+    return ("LAUF 2 - SCHREIBEN der freigegebenen Zeilen aus der neuesten Zuordnungsliste im "
+            "Ausgabeordner (Transaktion)"), None
 
 
 def geschoss_passt(oks, raum_ebene, zuordnung):
@@ -1353,16 +1412,36 @@ def _haupt(eingaben, log):
 def _pruefe_modus(cfg, log):
     """Meldet den Modus (Lauf 1/2) und die Eingaben. False = abbrechen, ohne etwas zu schreiben."""
     beschreibung, fehler = bestimme_modus(cfg.trockenlauf, cfg.liste_pfad, cfg.sp_datei, cfg.ausgabe_eingabe)
-    log("Modus: %s" % (beschreibung or "unklar"))
-    log("Eingaben: Ordner=%s | Trockenlauf=%s | Zuordnungsliste=%s" %
-        (cfg.ordner or "-", "ja" if cfg.trockenlauf else "NEIN", cfg.liste_pfad or "-"))
+    log("Modus: %s" % (beschreibung or "Abbruch (siehe Fehler)"))
+    log("Eingaben: Ordner=%s | Trockenlauf=%s | Ausgabeordner=%s" %
+        (cfg.ordner or "-", "ja" if cfg.trockenlauf else "NEIN", cfg.ausgabe))
     if fehler:
         log("FEHLER: " + fehler)
         return False
-    if cfg.liste_pfad and not os.path.isfile(cfg.liste_pfad):
-        log("FEHLER: Zuordnungsliste nicht gefunden: %s (Pfad prüfen; Schrägstriche / statt \\ verwenden)"
-            % cfg.liste_pfad)
-        return False
+    if not cfg.trockenlauf and not cfg.liste_pfad:         # Lauf 2: neueste Liste im Ausgabeordner
+        pfad, alle = finde_neueste_liste(cfg.ausgabe)
+        if pfad is None:
+            log("FEHLER: Im Ausgabeordner liegt keine Zuordnungsliste (Zuordnungsliste_<Zeit>.xlsx): %s. "
+                "Zuerst Lauf 1 starten (Trockenlauf = true)." % cfg.ausgabe)
+            return False
+        cfg.liste_pfad = pfad
+        log("Zuordnungsliste (neueste im Ausgabeordner): %s" % pfad)
+        spaeter = spaeter_gespeicherte_listen(pfad, alle)
+        if spaeter:
+            log("WARNUNG: %s wurde später gespeichert als die verwendete Liste. Hast du eine ältere Liste "
+                "bearbeitet? Dann diese neuere Liste löschen oder den Pfad der richtigen Liste in Position 11 "
+                "eintragen." % ", ".join(spaeter))
+    if cfg.liste_pfad:
+        if not os.path.isfile(cfg.liste_pfad):
+            log("FEHLER: Zuordnungsliste nicht gefunden: %s (Pfad prüfen; Schrägstriche / statt \\ verwenden)"
+                % cfg.liste_pfad)
+            return False
+        if liste_in_excel_geoeffnet(cfg.liste_pfad):
+            log("FEHLER: Die Zuordnungsliste '%s' ist noch in Excel geöffnet (oder gesperrt). Bitte speichern und "
+                "schließen, dann Lauf 2 erneut starten. Es wurde nichts geschrieben." % os.path.basename(cfg.liste_pfad))
+            return False
+        log("Die Liste wurde zuletzt gespeichert am %s."
+            % datetime.datetime.fromtimestamp(os.path.getmtime(cfg.liste_pfad)).strftime("%d.%m.%Y %H:%M:%S"))
     log("Phase: %s | Einheit DWG: %s | Schwellen: sicher <= %.1f %%, Vorschlag <= %.1f %%"
         % (cfg.phase_name, cfg.einheit, cfg.tol_sicher, cfg.tol_max))
     einheit_in_fuss(cfg.einheit)  # prüft die Eingabe früh
@@ -1395,8 +1474,9 @@ def _lauf1(rv, cfg, log, pruef):
     log.kopf("Schreiben")
     log("Lauf 1 schreibt nichts in Revit. Vorschlag: %d Zuordnungen 'sicher' (Freigabe J), %d 'unsicher' "
         "(Freigabe N)." % (sicher, len(vorschlaege) - sicher))
-    log("Prüfe die Zuordnungsliste (Freigabe J/N, ggf. OKS_Tausch), trage ihren Pfad in Position 11 ein "
-        "und starte mit Trockenlauf = false (Lauf 2).")
+    log("Prüfe die Zuordnungsliste (Freigabe J/N, ggf. OKS_Tausch), speichere und schließe sie, setze "
+        "Trockenlauf = false und starte Lauf 2. Er nimmt automatisch die neueste Zuordnungsliste im "
+        "Ausgabeordner.")
 
     raum_je_oks = {v.stempel.oks: v.raum["id"] for v in vorschlaege}
     oks_je_raum = {v.raum["id"]: v.stempel.oks for v in vorschlaege}
@@ -2053,8 +2133,11 @@ def _ausgabe_listen(ausgabe, zeit, zuordnungsliste, pruefliste, log, formate=("x
         liste("Zuordnungsliste", "Zuordnungsliste_%s" % zeit, "Zuordnung", ZUORDNUNG_SPALTEN,
               zuordnungsliste, ZUORDNUNG_TEXTSPALTEN, ZUORDNUNG_ZAHLENFORMAT, "Freigabe",
               lambda z: z.get("Status") == "unsicher", xlsx=zuordnung_xlsx)
-    liste("Prüfliste", "Pruefliste_%s" % zeit, "Prüfliste", PRUEF_SPALTEN, pruefliste,
-          PRUEF_TEXTSPALTEN, {}, None, None)
+    if pruefliste or zuordnungsliste is not None:
+        liste("Prüfliste", "Pruefliste_%s" % zeit, "Prüfliste", PRUEF_SPALTEN, pruefliste,
+              PRUEF_TEXTSPALTEN, {}, None, None)
+    else:
+        log("Prüfliste: keine Auffälligkeiten, es wird keine Datei geschrieben.")
     log.kopf("Prüfliste (Zusammenfassung)")
     zaehler = {}
     for z in pruefliste:

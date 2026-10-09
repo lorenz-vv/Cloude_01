@@ -679,15 +679,14 @@ class TestModus(unittest.TestCase):
         self.assertIsNone(f)
         self.assertIn("nichts geschrieben", b)
 
-    def test_trockenlauf_aus_ohne_liste_bricht_ab(self):
-        """Genau der Fall aus der Praxis: Lauf 2 gestartet, aber Position 11 leer."""
+    def test_trockenlauf_aus_ohne_pfad_ist_lauf2_mit_neuester_liste(self):
+        """Position 11 leer + Trockenlauf aus: Lauf 2 mit der neuesten Liste im Ausgabeordner."""
         b, f = rs.bestimme_modus(False, "")
-        self.assertIn("keine Zuordnungsliste", f)
-        self.assertEqual(b, "")
+        self.assertIsNone(f)
+        self.assertIn("LAUF 2", b)
+        self.assertIn("neuesten Zuordnungsliste", b)
 
-    def test_es_gibt_nur_lauf1_und_lauf2(self):
-        """Kein Direktlauf mehr: Schreiben geht nur mit Zuordnungsliste."""
-        self.assertIsNotNone(rs.bestimme_modus(False, "")[1])
+    def test_keine_raumanlage_mehr(self):
         self.assertNotIn("raeume_anlegen", rs.bestimme_modus.__code__.co_varnames)
 
     def test_liste_an_falscher_position(self):
@@ -700,6 +699,70 @@ class TestModus(unittest.TestCase):
         _b, f = rs.bestimme_modus(False, "U:/x/Ordner")
         self.assertIn("Position 11", f)
 
+
+class TestNeuesteListe(unittest.TestCase):
+    def _datei(self, ordner, name, alter_s=0):
+        pfad = os.path.join(ordner, name)
+        with open(pfad, "wb") as f:
+            f.write(b"x")
+        if alter_s:
+            t = os.path.getmtime(pfad) - alter_s
+            os.utime(pfad, (t, t))
+        return pfad
+
+    def test_neueste_nach_zeitstempel_im_namen(self):
+        with tempfile.TemporaryDirectory() as d:
+            for n in ("Zuordnungsliste_20261009_090713.xlsx", "Zuordnungsliste_20261009_145013.xlsx",
+                      "Zuordnungsliste_20261008_235959.xlsx", "Pruefliste_20261009_160000.xlsx",
+                      "~$ordnungsliste_20261009_170000.xlsx", "Zuordnungsliste_notiz.xlsx", "x.csv"):
+                self._datei(d, n)
+            pfad, alle = rs.finde_neueste_liste(d)
+        self.assertEqual(os.path.basename(pfad), "Zuordnungsliste_20261009_145013.xlsx")
+        self.assertEqual([os.path.basename(p) for p in alle],
+                         ["Zuordnungsliste_20261008_235959.xlsx", "Zuordnungsliste_20261009_090713.xlsx",
+                          "Zuordnungsliste_20261009_145013.xlsx"])
+
+    def test_xlsx_hat_vorrang_vor_csv_bei_gleichem_zeitstempel(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._datei(d, "Zuordnungsliste_20261009_090713.csv")
+            self._datei(d, "Zuordnungsliste_20261009_090713.xlsx")
+            pfad, _ = rs.finde_neueste_liste(d)
+        self.assertTrue(pfad.endswith(".xlsx"))
+
+    def test_keine_liste_und_ordner_fehlt(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(rs.finde_neueste_liste(d), (None, []))
+            self.assertEqual(rs.finde_neueste_liste(os.path.join(d, "gibt_es_nicht")), (None, []))
+
+    def test_spaeter_gespeicherte_liste(self):
+        with tempfile.TemporaryDirectory() as d:
+            alt = self._datei(d, "Zuordnungsliste_20261009_090713.xlsx")             # jetzt bearbeitet
+            neu = self._datei(d, "Zuordnungsliste_20261009_145013.xlsx", alter_s=3600)  # vor einer Stunde erzeugt
+            self.assertEqual(rs.spaeter_gespeicherte_listen(neu, [alt, neu]), ["Zuordnungsliste_20261009_090713.xlsx"])
+            self.assertEqual(rs.spaeter_gespeicherte_listen(alt, [alt, neu]), [])
+
+    def test_excel_sperrdatei_erkennt_geoeffnete_liste(self):
+        with tempfile.TemporaryDirectory() as d:
+            liste = self._datei(d, "Zuordnungsliste_20261009_090713.xlsx")
+            self.assertFalse(rs.liste_in_excel_geoeffnet(liste))
+            self._datei(d, "~$ordnungsliste_20261009_090713.xlsx")                    # Sperrdatei bei langem Namen
+            self.assertTrue(rs.liste_in_excel_geoeffnet(liste))
+
+    def test_gesperrte_datei_erkannt_wie_unter_windows(self):
+        """Excel sperrt die Datei gegen Schreiben: open(..., 'r+b') wirft PermissionError."""
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            liste = self._datei(d, "Zuordnungsliste_20261009_090713.xlsx")
+            with mock.patch("builtins.open", side_effect=PermissionError(13, "Zugriff verweigert")):
+                self.assertTrue(rs.liste_in_excel_geoeffnet(liste))
+
+    def test_sperrdatei_bei_kurzem_namen_und_fremde_sperrdatei(self):
+        with tempfile.TemporaryDirectory() as d:
+            kurz = self._datei(d, "Liste.xlsx")
+            self._datei(d, "~$Anderes.xlsx")
+            self.assertFalse(rs.liste_in_excel_geoeffnet(kurz))
+            self._datei(d, "~$Liste.xlsx")
+            self.assertTrue(rs.liste_in_excel_geoeffnet(kurz))
 
 class TestZusatzblaetter(unittest.TestCase):
     def _stempel(self):
