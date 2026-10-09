@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """Tests der Revit-freien Logik. Start: python3 -m unittest discover -s tests -v"""
-import math
 import os
 import sys
 import tempfile
@@ -64,11 +63,6 @@ class TestCsv(unittest.TestCase):
         st, mel = rs.parse_stempel_text(text, "y.csv")
         self.assertEqual([s.oks for s in st], ["A-G01-_2"])
         self.assertEqual(len(mel), 2)
-
-    def test_ziel_koordinaten(self):
-        text = "FM.OKS,Position X,Position Y,Ziel X,Ziel Y\nA-G01-_1,1,2,5,6\n"
-        st, _ = rs.parse_stempel_text(text, "z.csv")
-        self.assertEqual((st[0].punkt_x, st[0].punkt_y), (5.0, 6.0))
 
 
 class TestExterneReferenzen(unittest.TestCase):
@@ -223,12 +217,6 @@ class TestNummern(unittest.TestCase):
         self.assertEqual(rs.kurz_nummer("100049-004-A-G01-_15"), ("G01-_15", None))
         self.assertEqual(rs.kurz_nummer("100049-004-A-G01 -_15"), ("G01-_15", None))
         self.assertEqual(rs.kurz_nummer("100049-004-A-U01-_105"), ("U01-_105", None))
-
-    def test_kurz_laenge(self):
-        self.assertEqual(rs.kurz_nummer("100049-004-A-G01-_15", "laenge", 7), ("G01-_15", None))
-        n, f = rs.kurz_nummer("G01_15", "laenge", 7)
-        self.assertIsNone(n)
-        self.assertIn("kürzer", f)
 
     def test_kurz_fehler(self):
         self.assertIsNone(rs.kurz_nummer("ABC")[0])
@@ -420,15 +408,6 @@ class TestSchreiben(unittest.TestCase):
     def test_nv_bleibt_erhalten(self):
         s = rs.Stempel("100049-004-A-G01-_15", nummer="n.v.", name="Flur", x=0, y=0)
         self.assertEqual(rs.schreibvorgaben(s)[0]["nummer_text"], "Raum-Nr. n.v.")
-
-    def test_nur_aenderungen(self):
-        soll = {"name": "Büro", "oks": "X", "nummer_text": "Raum-Nr. 1", "nummer": "G01-_1"}
-        ist = {"name": "Büro", "oks": "alt", "nummer_text": "Raum-Nr. 1", "nummer": None}
-        self.assertEqual(rs.aenderungen(ist, soll), {"oks": "X", "nummer": "G01-_1"})
-        self.assertEqual(rs.aenderungen(soll, soll), {})          # zweiter Lauf: nichts zu tun
-
-    def test_none_wird_nicht_geschrieben(self):
-        self.assertEqual(rs.aenderungen({"nummer": "a"}, {"nummer": None}), {})
 
 
 class TestEingaben(unittest.TestCase):
@@ -634,6 +613,56 @@ class TestXlsx(unittest.TestCase):
             wb.close()
 
 
+class TestEinstellungen(unittest.TestCase):
+    def test_standardwerte(self):
+        c = rs.Einstellungen([])
+        self.assertEqual((c.ordner, c.trockenlauf, c.phase_name, c.einheit), ("", True, "Bestand", "m"))
+        self.assertEqual((c.tol_sicher, c.tol_max, c.max_abstand_m, c.praefix), (5.0, 15.0, 10.0, "Raum-Nr. "))
+        self.assertEqual((c.ausschluss_suffix, c.formate), ("_Bestand", ("xlsx",)))
+        self.assertEqual(c.ebenen_zuordnung["G01"], "1. OG")
+
+    def test_liste_in_in0_und_leere_werte(self):
+        c = rs.Einstellungen([["U:/x", False, "", [], "", "", "", "", "", "", "", "", "", [], True, "-", "beides"]])
+        self.assertEqual((c.ordner, c.trockenlauf), ("U:/x", False))
+        self.assertEqual(c.phase_name, "Bestand")                  # leer -> Standard
+        self.assertEqual(c.ausschluss_suffix, "")                   # "-" schaltet den Filter ab
+        self.assertEqual(c.formate, ("xlsx", "csv"))
+
+    def test_ausgabeordner_ableitung(self):
+        self.assertEqual(rs.Einstellungen(["U:/x"]).ausgabe, os.path.join("U:/x", "_Ausgabe"))
+        e = ["U:/x", False, "", "", "", "", "", "", "", "", "", "U:/y/Liste.xlsx"]
+        self.assertEqual(rs.Einstellungen(e).ausgabe, "U:/y")
+        e[12:13] = ["D:/aus"]
+        self.assertEqual(rs.Einstellungen(e).ausgabe, "D:/aus")
+
+    def test_manuelle_links(self):
+        c = rs.Einstellungen(["U:/x", True, "", "", "", "", "", "", "", "", "", "", "",
+                              ["100049_004_A_G03.dwg=Mein Link.dwg", "ohne gleichheitszeichen"]])
+        self.assertEqual(c.manuelle_links, {"100049_004_a_g03": "mein link"})
+
+
+class TestZuordnungszeile(unittest.TestCase):
+    def test_zeile(self):
+        s = rs.Stempel("A-G01-_1", nummer="2.01", name="Büro", flaeche=17.0, x=1, y=2)
+        z = rs.Zuordnung(0, 5, "Fläche", 3.456, "unsicher", "Bemerkung")
+        zeile = rs.zuordnungszeile(rs.Vorschlag(s, {"id": 5, "nummer": "n.1", "name": "Raum", "flaeche": 17.6543},
+                                                z, "1. OG"))
+        self.assertEqual((zeile["Raum_ID"], zeile["OKS"], zeile["Freigabe"], zeile["Status"]),
+                         (5, "A-G01-_1", "N", "unsicher"))
+        self.assertEqual((zeile["Raum_Flaeche"], zeile["Abweichung_Prozent"]), (17.65, 3.5))
+        self.assertTrue(set(zeile) <= set(rs.ZUORDNUNG_SPALTEN))
+        z2 = rs.Zuordnung(0, 5, "Position", None, "sicher")
+        self.assertEqual(rs.zuordnungszeile(rs.Vorschlag(s, {"id": 5, "nummer": "", "name": "", "flaeche": 1.0},
+                                                         z2, "EG"))["Freigabe"], "J")
+
+    def test_pruefliste_sammelt_zeilen(self):
+        p = rs.Pruefliste()
+        p("Kategorie", ebene="EG", oks="A", detail="x")
+        self.assertEqual(p.zeilen, [{"Kategorie": "Kategorie", "Ebene": "EG", "OKS": "A", "Stempel_Nummer": "",
+                                     "Name": "", "Raum_ID": "", "Detail": "x"}])
+        self.assertEqual(list(p.zeilen[0]), rs.PRUEF_SPALTEN)       # gleiche Spalten wie die Ausgabeliste
+
+
 class TestModus(unittest.TestCase):
     LISTE = "U:/x/Zuordnungsliste_1.xlsx"
 
@@ -656,10 +685,10 @@ class TestModus(unittest.TestCase):
         self.assertIn("keine Zuordnungsliste", f)
         self.assertEqual(b, "")
 
-    def test_direktlauf_nur_mit_raumanlage(self):
-        b, f = rs.bestimme_modus(False, "", raeume_anlegen=True)
-        self.assertIsNone(f)
-        self.assertIn("DIREKTLAUF", b)
+    def test_es_gibt_nur_lauf1_und_lauf2(self):
+        """Kein Direktlauf mehr: Schreiben geht nur mit Zuordnungsliste."""
+        self.assertIsNotNone(rs.bestimme_modus(False, "")[1])
+        self.assertNotIn("raeume_anlegen", rs.bestimme_modus.__code__.co_varnames)
 
     def test_liste_an_falscher_position(self):
         _b, f = rs.bestimme_modus(False, "", sp_datei=self.LISTE)

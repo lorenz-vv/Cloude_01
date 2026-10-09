@@ -162,9 +162,7 @@ Befehl `DATENEXTRAKTION`, nur Block `PIT_DOI_GMSH`. Im Assistenten:
    UTF-8 oder Windows-1252 erkennt das Skript selbst. Weitere Spalten schaden nicht.
 
 Spaltennamen, die erkannt werden: `FM.OKS`, `FM.NUMMER`, `FM.NAME`, `FM.FLAECHE`, `Position X/Y`,
-`Dateiname` (auch `RaumOKS`, `Raumnummer`, `Raumname`, `Raumfläche`). Optional `Ziel X` / `Ziel Y`:
-Ankerpunkt der Verbindungslinie, falls er später mitexportiert wird – wird dann statt des Einfügepunkts
-für den Punkt-in-Raum-Test verwendet.
+`Dateiname` (auch `RaumOKS`, `Raumnummer`, `Raumname`, `Raumfläche`).
 
 ## 3. Dynamo-Graph (.dyn) selbst erstellen – 3 Nodes
 
@@ -182,7 +180,7 @@ Revit 2025 → Registerkarte *Verwalten* → **Dynamo** → *Neu*.
    [
      "U:/Dokumente/BIM_CAD/Raumstempel",            // 0  Ordner mit den CSV-Dateien
      true,                                            // 1  Trockenlauf (true = nichts schreiben)
-     false,                                           // 2  fehlende Räume anlegen
+     false,                                           // 2  (frei, nicht mehr verwendet; Wert egal)
      ["G00=EG","G01=1. OG","G02=2. OG","G03=3. OG","G04=4. OG","U01=1. UG"],  // 3 Ebenen
      "m",                                             // 4  Einheit der DWG
      "Bestand",                                       // 5  Phase
@@ -227,8 +225,8 @@ müssen alle Eingänge belegt sein; für „leer“ einen Code-Block mit `null;`
    `LAUF 1` (keine Liste, nichts wird geschrieben) oder `LAUF 2` (Liste aus Position 11). Ist der
    Trockenlauf aus, aber Position 11 leer, bricht das Skript mit einer Fehlermeldung ab und schreibt
    nichts (sonst würde es nur eine neue Vorschlagsliste erzeugen und deine bearbeitete Liste ignorieren).
-   Dasselbe passiert, wenn der Listenpfad versehentlich in Position 10 oder 12 steht. Nur zusammen mit
-   „Fehlende Räume anlegen“ (Position 2 = true) gibt es noch den Direktlauf ohne Liste.
+   Dasselbe passiert, wenn der Listenpfad versehentlich in Position 10 oder 12 steht. Räume werden vom
+   Skript nie angelegt: lege sie vorher in Revit an (Phase „Bestand“).
 
 ### Prüfliste (CSV, mit Element-IDs)
 
@@ -263,6 +261,4 @@ nicht verarbeitete Ebenen · Flächenabweichung ≥ 5 % · fehlende Parameter ·
   zeigt das die Plausibilitätsmeldung (Punkte außerhalb des Verknüpfungsumrisses) – bitte dann melden.
 * Einfügepunkte außerhalb ihres Raums werden über die Fläche aufgefangen. Das ist robust bei
   unterschiedlich großen Räumen; bei vielen gleich großen Räumen entscheidet der Abstand (Status „unsicher“).
-* „Fehlende Räume anlegen“ nutzt den Stempel-Einfügepunkt; bei Stempeln außerhalb ihres Raums ist das
-  nicht sinnvoll. Standard bleibt aus.
 * MEP-Raumnummer und Solar-Computer sind noch nicht umgesetzt.

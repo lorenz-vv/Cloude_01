@@ -82,7 +82,7 @@ class TestLauf1(AblaufBasis):
         self.assertNotIn("FEHLER", log)
         self.assertIn("Modus: LAUF 1", log)
         self.assertIn("3 von 3 Stempeln liegen in einem Raum", log)       # Transformation mit Versatz stimmt
-        self.assertIn("Koordinaten von Verknüpfung '100049_004_a_g00_bestand'", log)
+        self.assertIn("Koordinaten von Verknüpfung '100049_004_A_G00_Bestand.dwg'", log)
         self.assertIn("Plausibilität: 3 von 3", log)
         # Lauf 1 ändert nichts
         self.assertEqual(self.buero.name_wert, "Raum")

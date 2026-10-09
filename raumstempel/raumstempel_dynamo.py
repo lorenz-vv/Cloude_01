@@ -7,20 +7,27 @@ defensiv, die gesamte Logik (CSV, Kürzung, Koordinaten, Zuordnung, Prüflisten)
 steht in reinen Funktionen OHNE Revit-Abhängigkeit und wird in
 tests/test_raumstempel.py getestet.
 
-Ablauf
-------
- Lauf 1 (Trockenlauf = True, Standard): Es wird NICHTS geschrieben. Das Skript
-        ordnet Stempel den Räumen zu, schreibt eine Zuordnungsliste und eine
-        Prüfliste (CSV, mit Element-IDs) und gibt ein Protokoll aus.
- Lauf 2 (Trockenlauf = False): Es werden nur freigegebene Zuordnungen
-        geschrieben. Entweder aus der geprüften Zuordnungsliste (Spalte
-        "Freigabe") oder - ohne Liste - nur Zuordnungen mit Status "sicher".
+Ablauf (immer in zwei Schritten)
+--------------------------------
+ Lauf 1 (Trockenlauf = True, Position 11 leer): Es wird NICHTS in Revit geschrieben.
+        Das Skript ordnet Stempel den Räumen zu und schreibt eine Zuordnungsliste
+        (Excel, Blatt "Zuordnung" plus "Stempel" und "Räume") und eine Prüfliste.
+ Lauf 2 (Trockenlauf = False, Position 11 = Pfad der geprüften Zuordnungsliste):
+        Es werden nur Zeilen mit Freigabe "J" geschrieben (Name, Nummer, RaumOKS,
+        Raumnummer_Text). Ohne Zuordnungsliste schreibt das Skript nie.
+
+Aufbau dieser Datei
+-------------------
+ TEIL 1  reine Logik ohne Revit (CSV/Excel, Kürzung, Koordinaten, Zuordnung, Listen);
+         getestet in tests/test_raumstempel.py
+ TEIL 2  Ablauf (Lauf 1 / Lauf 2) und die Zugriffe auf Revit; ein Ablauftest mit nachgebildetem
+         Revit steht in tests/test_revit_ablauf.py
 
 Eingaben (IN[...]) - Reihenfolge im Dynamo-Graph
 ------------------------------------------------
- 0  Ordner mit den Stempel-CSV-Dateien                  (Text, Pflicht)
+ 0  Ordner mit den Stempel-Dateien (CSV oder Excel)     (Text, Pflicht)
  1  Trockenlauf                                         (True/False, Standard True)
- 2  Fehlende Räume anlegen (NewRoom)                    (True/False, Standard False)
+ 2  (frei, nicht mehr verwendet; früher "Räume anlegen")
  3  Ebenenzuordnung, Liste "Code=Revit-Ebenenname"      (Standard siehe unten)
  4  Zeicheneinheit der DWG: "m", "cm" oder "mm"         (Standard "m")
  5  Phasenname der Räume                                (Standard "Bestand")
@@ -86,8 +93,6 @@ _SPALTEN_ALIAS = {
     "x": ("positionx", "x"),
     "y": ("positiony", "y"),
     "dateiname": ("dateiname",),
-    "ziel_x": ("zielx",),
-    "ziel_y": ("ziely",),
 }
 
 
@@ -98,27 +103,17 @@ class Stempel(object):
     """Ein Raumstempel aus der AutoCAD-Datenextraktion."""
 
     def __init__(self, oks, nummer="", name="", flaeche=None, x=None, y=None,
-                 dateiname="", quelle="", zeile=0, ziel_x=None, ziel_y=None):
+                 dateiname="", quelle="", zeile=0):
         self.oks = oks
         self.nummer = nummer
         self.name = name
         self.flaeche = flaeche          # m2 laut Stempel, nur zum Vergleich
         self.x = x                      # Einfügepunkt, DWG-Einheiten
         self.y = y
-        self.ziel_x = ziel_x            # optional: Ankerpunkt der Verbindungslinie
-        self.ziel_y = ziel_y
         self.dateiname = dateiname
         self.quelle = quelle            # CSV-Datei
         self.zeile = zeile
         self.code = geschosscode(oks)
-
-    @property
-    def punkt_x(self):
-        return self.ziel_x if (self.ziel_x is not None and self.ziel_y is not None) else self.x
-
-    @property
-    def punkt_y(self):
-        return self.ziel_y if (self.ziel_x is not None and self.ziel_y is not None) else self.y
 
     def __repr__(self):
         return "Stempel(%s, %s)" % (self.oks, self.name)
@@ -252,8 +247,6 @@ def parse_stempel_zeilen(zeilen, quelle="", ausschluss_suffix=STANDARD_AUSSCHLUS
             name=feld(zeile, "name").strip(),
             flaeche=parse_zahl(feld(zeile, "flaeche")),
             x=x, y=y,
-            ziel_x=parse_zahl(feld(zeile, "ziel_x")),
-            ziel_y=parse_zahl(feld(zeile, "ziel_y")),
             dateiname=dateiname,
             quelle=quelle, zeile=nr))
     if ignoriert:
@@ -299,18 +292,13 @@ def geschosscode(oks):
     return m.group(1).upper() if m else None
 
 
-def kurz_nummer(oks, modus="segmente", laenge=7):
+def kurz_nummer(oks):
     """Revit-Raumnummer aus der OKS. Gibt (nummer, fehlertext) zurück.
 
-    modus "segmente": Geschosscode + letztes Segment ('...-G01-_15' -> 'G01-_15'),
-                      unabhängig von der Anzahl der Ziffern.
-    modus "laenge":   die letzten `laenge` Zeichen.
+    Geschosscode + letztes Segment ('...-G01-_15' -> 'G01-_15'), unabhängig von der Anzahl
+    der Ziffern.
     """
     s = re.sub(r"\s+", "", oks or "")
-    if modus == "laenge":
-        if len(s) < laenge:
-            return None, "OKS kürzer als %d Zeichen: '%s'" % (laenge, s)
-        return s[-laenge:], None
     teile = s.split("-")
     if len(teile) < 2:
         return None, "OKS hat zu wenige Segmente: '%s'" % s
@@ -493,6 +481,27 @@ class Zuordnung(object):
         self.bemerkung = bemerkung
 
 
+class Vorschlag(object):
+    """Ein Zuordnungsvorschlag aus Lauf 1: Stempel -> Raum auf einer Ebene."""
+
+    def __init__(self, stempel, raum, zuordnung, ebene):
+        self.stempel = stempel          # Stempel
+        self.raum = raum                # dict aus _sammle_raeume (id, nummer, name, flaeche, ...)
+        self.zuordnung = zuordnung      # Zuordnung
+        self.ebene = ebene              # Revit-Ebenenname
+
+
+class Auftrag(object):
+    """Ein Schreibauftrag aus Lauf 2: Werte für einen Raum."""
+
+    def __init__(self, raum_id, raum, werte, ebene, stempel):
+        self.raum_id = raum_id
+        self.raum = raum                # Revit-Raum (Element)
+        self.werte = werte              # dict name, oks, nummer_text, nummer
+        self.ebene = ebene
+        self.stempel = stempel
+
+
 def abweichung_prozent(stempel_flaeche, raum_flaeche):
     if stempel_flaeche is None or raum_flaeche is None or raum_flaeche <= 0:
         return None
@@ -629,12 +638,12 @@ def ordne_zu(stempel, raeume, treffer, positionen=None,
 
 
 # --- Schreibvorgaben --------------------------------------------------------
-def schreibvorgaben(stempel, praefix="Raum-Nr. ", modus="segmente", laenge=7):
+def schreibvorgaben(stempel, praefix="Raum-Nr. "):
     """Zielwerte für einen Raum. Gibt (werte, fehler) zurück.
 
     werte: dict name, oks, nummer_text, nummer (nummer None bei Fehler)
     """
-    nummer, fehler = kurz_nummer(stempel.oks, modus, laenge)
+    nummer, fehler = kurz_nummer(stempel.oks)
     nr_text = stempel.nummer.strip()
     return {
         "name": stempel.name.strip(),
@@ -642,11 +651,6 @@ def schreibvorgaben(stempel, praefix="Raum-Nr. ", modus="segmente", laenge=7):
         "nummer_text": (praefix + nr_text) if nr_text else "",
         "nummer": nummer,
     }, fehler
-
-
-def aenderungen(ist, soll):
-    """Gibt nur die Felder zurück, deren Wert sich ändert (Wiederholbarkeit)."""
-    return {k: v for k, v in soll.items() if v is not None and ist.get(k) != v}
 
 
 # --- CSV-Ausgabe / Zuordnungsliste ------------------------------------------
@@ -661,6 +665,18 @@ RAEUME_SPALTEN = ["Ebene", "Raum_ID", "Nummer", "Name", "Flaeche", "RaumOKS_aktu
 ZUORDNUNG_TEXTSPALTEN = ("Stempel_Nummer", "Raum_Nummer_alt")
 PRUEF_TEXTSPALTEN = ("Stempel_Nummer",)
 ZUORDNUNG_ZAHLENFORMAT = {"Stempel_Flaeche": 2, "Raum_Flaeche": 2, "Abweichung_Prozent": 1}
+
+
+def zuordnungszeile(v):
+    """Zeile der Zuordnungsliste (Blatt "Zuordnung") für einen Vorschlag."""
+    s, r, z = v.stempel, v.raum, v.zuordnung
+    return {
+        "Ebene": v.ebene, "OKS": s.oks, "Stempel_Nummer": s.nummer, "Stempel_Name": s.name,
+        "Stempel_Flaeche": s.flaeche, "Raum_ID": r["id"], "Raum_Nummer_alt": r["nummer"],
+        "Raum_Name_alt": r["name"], "Raum_Flaeche": round(r["flaeche"], 2),
+        "Abweichung_Prozent": None if z.abweichung is None else round(z.abweichung, 1),
+        "Methode": z.methode, "Status": z.status,
+        "Freigabe": "J" if z.status == "sicher" else "N", "Bemerkung": z.bemerkung}
 
 
 def baue_stempel_zeilen(stempel, ebene_von_code, raum_je_oks):
@@ -1082,7 +1098,7 @@ def lese_zuordnungsliste(pfad):
     return ergebnis, meldungen
 
 
-def bestimme_modus(trockenlauf, liste_pfad, sp_datei="", ausgabe_eingabe="", raeume_anlegen=False):
+def bestimme_modus(trockenlauf, liste_pfad, sp_datei="", ausgabe_eingabe=""):
     """Welcher Lauf ist das? Gibt (beschreibung, fehlertext) zurück.
 
     Lauf 1: keine Zuordnungsliste (Position 11), Trockenlauf an: Vorschlag, nichts wird geschrieben.
@@ -1105,9 +1121,6 @@ def bestimme_modus(trockenlauf, liste_pfad, sp_datei="", ausgabe_eingabe="", rae
                     "gehört in Position 11.")
     if trockenlauf:
         return "LAUF 1 - Vorschlag (keine Zuordnungsliste in Position 11) - es wird nichts geschrieben", None
-    if raeume_anlegen:
-        return ("DIREKTLAUF ohne Zuordnungsliste: sichere Zuordnungen werden sofort geschrieben, fehlende "
-                "Räume werden angelegt"), None
     return "", ("Trockenlauf ist AUS, aber in Position 11 steht keine Zuordnungsliste. Es wird nichts "
                 "geschrieben. Lauf 1: Trockenlauf = true. Lauf 2: Pfad der geprüften Zuordnungsliste "
                 "in Position 11 eintragen.")
@@ -1190,7 +1203,8 @@ def stempel_fuer_zeile(zeile, stempel_nach_oks):
 
 
 # ---------------------------------------------------------------------------
-# TEIL 2: Revit-Teil (dünn, defensiv). Wird nur in Dynamo ausgeführt.
+# TEIL 2: Ablauf und Revit-Zugriffe (dünn, defensiv). Läuft nur in Dynamo.
+# Die Schritte sind klein gehalten; Eingaben/Prüfungen/Zuordnung/Schreiben/Listen sind getrennt.
 # ---------------------------------------------------------------------------
 def _eingaben_entpacken(eingaben):
     """Erlaubt, alle Eingaben als EINE Liste an IN[0] zu übergeben (ein Code-Block-Node)."""
@@ -1228,7 +1242,46 @@ def _eid(element_id):
     return int(wert)
 
 
+class Einstellungen(object):
+    """Die Eingaben des Code-Blocks (Positionen 0 bis 16) mit Standardwerten.
+
+    Position 2 (früher "Fehlende Räume anlegen") ist entfallen und bleibt frei, damit der
+    Code-Block unverändert weiter funktioniert.
+    """
+
+    def __init__(self, eingaben):
+        e = _eingaben_entpacken(eingaben)
+        self.ordner = str(_eingabe(e, 0, ""))
+        self.trockenlauf = bool(_eingabe(e, 1, True))
+        self.ebenen_zuordnung = parse_ebenen_zuordnung(_als_liste(_eingabe(e, 3, STANDARD_EBENEN)))
+        self.einheit = str(_eingabe(e, 4, "m"))
+        self.phase_name = str(_eingabe(e, 5, "Bestand"))
+        self.tol_sicher = float(_eingabe(e, 6, 5))
+        self.tol_max = float(_eingabe(e, 7, 15))
+        self.max_abstand_m = float(_eingabe(e, 8, 10))
+        self.praefix = str(_eingabe(e, 9, "Raum-Nr. "))
+        self.sp_datei = str(_eingabe(e, 10, ""))
+        self.liste_pfad = str(_eingabe(e, 11, ""))
+        self.ausgabe_eingabe = str(_eingabe(e, 12, ""))
+        liste_ordner = os.path.dirname(self.liste_pfad) if self.liste_pfad else ""
+        self.ausgabe = self.ausgabe_eingabe or liste_ordner or os.path.join(self.ordner, "_Ausgabe")
+        self.manuelle_links = {}
+        for z in _als_liste(_eingabe(e, 13, [])):
+            if "=" in str(z):
+                k, v = str(z).split("=", 1)
+                self.manuelle_links[norm_dwgname(k)] = norm_dwgname(v)
+        self.parameter_anlegen = bool(_eingabe(e, 14, True))
+        self.ausschluss_suffix = str(_eingabe(e, 15, STANDARD_AUSSCHLUSS_SUFFIX))
+        if self.ausschluss_suffix.strip().lower() in ("-", "keine"):
+            self.ausschluss_suffix = ""
+        ausgabeformat = str(_eingabe(e, 16, "xlsx")).strip().lower()
+        self.formate = {"xlsx": ("xlsx",), "excel": ("xlsx",), "csv": ("csv",),
+                        "beides": ("xlsx", "csv"), "both": ("xlsx", "csv")}.get(ausgabeformat, ("xlsx",))
+
+
 class Protokoll(object):
+    """Sammelt die Textzeilen für den Watch-Node."""
+
     def __init__(self):
         self.zeilen = []
 
@@ -1240,10 +1293,36 @@ class Protokoll(object):
         self.zeilen.append("=== %s ===" % titel)
 
 
+class Pruefliste(object):
+    """Sammelt Auffälligkeiten; der Aufruf fügt eine Zeile hinzu."""
+
+    def __init__(self):
+        self.zeilen = []
+
+    def __call__(self, kat, ebene="", oks="", nummer="", name="", raum_id="", detail=""):
+        self.zeilen.append({"Kategorie": kat, "Ebene": ebene, "OKS": oks, "Stempel_Nummer": nummer,
+                            "Name": name, "Raum_ID": raum_id, "Detail": detail})
+
+
+class Revit(object):
+    """Zugriff auf Revit/Dynamo. Wird erst zur Laufzeit geladen (nicht beim Import der Tests)."""
+
+    def __init__(self):
+        import clr
+        clr.AddReference("RevitAPI")
+        clr.AddReference("RevitServices")
+        import Autodesk.Revit.DB as DB
+        from RevitServices.Persistence import DocumentManager
+        from RevitServices.Transactions import TransactionManager
+        self.DB = DB
+        self.doc = DocumentManager.Instance.CurrentDBDocument
+        self.app = self.doc.Application
+        self.TransactionManager = TransactionManager
+
+
 def haupt(eingaben):
     """Einstieg aus dem Dynamo-Python-Node. Gibt das Protokoll als Liste zurück."""
     log = Protokoll()
-    eingaben = _eingaben_entpacken(eingaben)
     try:
         _haupt(eingaben, log)
     except Exception as ex:  # nichts darf unkommentiert abbrechen
@@ -1255,83 +1334,86 @@ def haupt(eingaben):
 
 
 def _haupt(eingaben, log):
-    import clr
-    clr.AddReference("RevitAPI")
-    clr.AddReference("RevitServices")
-    import Autodesk.Revit.DB as DB
-    from RevitServices.Persistence import DocumentManager
-    from RevitServices.Transactions import TransactionManager
-
-    doc = DocumentManager.Instance.CurrentDBDocument
-    app = doc.Application
-
-    ordner = _eingabe(eingaben, 0, "")
-    trockenlauf = bool(_eingabe(eingaben, 1, True))
-    raeume_anlegen = bool(_eingabe(eingaben, 2, False))
-    ebenen_zuordnung = parse_ebenen_zuordnung(_als_liste(_eingabe(eingaben, 3, STANDARD_EBENEN)))
-    einheit = str(_eingabe(eingaben, 4, "m"))
-    phase_name = str(_eingabe(eingaben, 5, "Bestand"))
-    tol_sicher = float(_eingabe(eingaben, 6, 5))
-    tol_max = float(_eingabe(eingaben, 7, 15))
-    max_abstand_m = float(_eingabe(eingaben, 8, 10))
-    praefix = str(_eingabe(eingaben, 9, "Raum-Nr. "))
-    sp_datei = str(_eingabe(eingaben, 10, ""))
-    liste_pfad = str(_eingabe(eingaben, 11, ""))
-    liste_ordner = os.path.dirname(liste_pfad) if liste_pfad else ""
-    ausgabe = str(_eingabe(eingaben, 12, "")) or liste_ordner or os.path.join(ordner, "_Ausgabe")
-    manuelle_links = {}
-    for z in _als_liste(_eingabe(eingaben, 13, [])):
-        if "=" in str(z):
-            k, v = str(z).split("=", 1)
-            manuelle_links[norm_dwgname(k)] = norm_dwgname(v)
-    parameter_anlegen = bool(_eingabe(eingaben, 14, True))
-    ausgabeformat = str(_eingabe(eingaben, 16, "xlsx")).strip().lower()
-    formate = {"xlsx": ("xlsx",), "excel": ("xlsx",), "csv": ("csv",),
-               "beides": ("xlsx", "csv"), "both": ("xlsx", "csv")}.get(ausgabeformat, ("xlsx",))
-    ausschluss_suffix = str(_eingabe(eingaben, 15, STANDARD_AUSSCHLUSS_SUFFIX))
-    if ausschluss_suffix.strip().lower() in ("-", "keine"):
-        ausschluss_suffix = ""
-
+    cfg = Einstellungen(eingaben)
     zeit = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     log.kopf("Raumstempel -> Revit-Räume  (%s)" % zeit)
-    beschreibung, modus_fehler = bestimme_modus(trockenlauf, liste_pfad, sp_datei,
-                                                str(_eingabe(eingaben, 12, "")), raeume_anlegen)
+    if not _pruefe_modus(cfg, log):
+        return
+    rv = Revit()
+    pruef = Pruefliste()
+    params_ok = _stelle_parameter_sicher(rv, cfg, log, pruef)
+    if cfg.liste_pfad:
+        _lauf2(rv, cfg, params_ok, log, pruef)
+        _ausgabe_listen(cfg.ausgabe, zeit, None, pruef.zeilen, log, cfg.formate)
+    else:
+        zuordnungsliste, zusatz = _lauf1(rv, cfg, log, pruef)
+        _ausgabe_listen(cfg.ausgabe, zeit, zuordnungsliste, pruef.zeilen, log, cfg.formate, zusatz)
+
+
+def _pruefe_modus(cfg, log):
+    """Meldet den Modus (Lauf 1/2) und die Eingaben. False = abbrechen, ohne etwas zu schreiben."""
+    beschreibung, fehler = bestimme_modus(cfg.trockenlauf, cfg.liste_pfad, cfg.sp_datei, cfg.ausgabe_eingabe)
     log("Modus: %s" % (beschreibung or "unklar"))
     log("Eingaben: Ordner=%s | Trockenlauf=%s | Zuordnungsliste=%s" %
-        (ordner or "-", "ja" if trockenlauf else "NEIN", liste_pfad or "-"))
-    if modus_fehler:
-        log("FEHLER: " + modus_fehler)
-        return
-    if liste_pfad and not os.path.isfile(liste_pfad):
+        (cfg.ordner or "-", "ja" if cfg.trockenlauf else "NEIN", cfg.liste_pfad or "-"))
+    if fehler:
+        log("FEHLER: " + fehler)
+        return False
+    if cfg.liste_pfad and not os.path.isfile(cfg.liste_pfad):
         log("FEHLER: Zuordnungsliste nicht gefunden: %s (Pfad prüfen; Schrägstriche / statt \\ verwenden)"
-            % liste_pfad)
-        return
+            % cfg.liste_pfad)
+        return False
     log("Phase: %s | Einheit DWG: %s | Schwellen: sicher <= %.1f %%, Vorschlag <= %.1f %%"
-        % (phase_name, einheit, tol_sicher, tol_max))
-    einheit_in_fuss(einheit)  # prüft die Eingabe früh
+        % (cfg.phase_name, cfg.einheit, cfg.tol_sicher, cfg.tol_max))
+    einheit_in_fuss(cfg.einheit)  # prüft die Eingabe früh
+    return True
 
-    pruefliste = []     # dicts für Pruefliste_*.csv
 
-    def pruef(kat, ebene="", oks="", nummer="", name="", raum_id="", detail=""):
-        pruefliste.append({"Kategorie": kat, "Ebene": ebene, "OKS": oks, "Stempel_Nummer": nummer,
-                           "Name": name, "Raum_ID": raum_id, "Detail": detail})
+# --- Lauf 1: Vorschlag --------------------------------------------------------------------
+def _lauf1(rv, cfg, log, pruef):
+    """Stempel und Räume lesen, zuordnen, Listen aufbauen. Schreibt NICHTS in Revit.
 
-    # --- Parameter prüfen / anlegen ----------------------------------------
-    params_ok = _stelle_parameter_sicher(doc, app, DB, TransactionManager, sp_datei, ausgabe,
-                                         parameter_anlegen and not trockenlauf, log, pruef)
+    Gibt (zuordnungsliste, zusatz) zurück: Zeilen des Blatts "Zuordnung" und die Zusatzblätter.
+    """
+    stempel_liste = _lese_stempel(cfg, log, pruef)
+    raeume_info, alle_ebenen, raeume_je_ebene = _lese_raeume(rv, cfg, log, pruef)
+    ebene_von_code = _bestimme_ebenen(cfg, stempel_liste, alle_ebenen, raeume_je_ebene, log, pruef)
 
-    # --- Lauf 2 mit geprüfter Liste ----------------------------------------
-    if liste_pfad:
-        _lauf_mit_liste(doc, DB, TransactionManager, liste_pfad, praefix, trockenlauf,
-                        params_ok, ordner, ausschluss_suffix, phase_name, ebenen_zuordnung, log, pruef)
-        _ausgabe_listen(ausgabe, zeit, None, pruefliste, log, formate)
-        return
+    verknuepfungen = _sammle_verknuepfungen(rv)
+    vorschlaege, n_treffer, n_stempel = [], 0, 0
+    for code, ebene in sorted(ebene_von_code.items()):
+        v, t, n = _ordne_ebene_zu(rv, cfg, code, ebene, stempel_liste, raeume_info, verknuepfungen, log, pruef)
+        vorschlaege.extend(v)
+        n_treffer += t
+        n_stempel += n
+    if n_stempel:
+        log.kopf("Gesamt-Trefferquote")
+        log("%d von %d Stempeln wurden per Punkt-in-Raum in einem Raum gefunden." % (n_treffer, n_stempel))
 
-    # --- Stempel lesen -------------------------------------------------------
-    if not ordner or not os.path.isdir(ordner):
-        raise ValueError("Ordner mit CSV-Dateien nicht gefunden: '%s'" % ordner)
+    _pruefe_nummern(vorschlaege, stempel_liste, raeume_info, log, pruef)
+    sicher = len([v for v in vorschlaege if v.zuordnung.status == "sicher"])
+    log.kopf("Schreiben")
+    log("Lauf 1 schreibt nichts in Revit. Vorschlag: %d Zuordnungen 'sicher' (Freigabe J), %d 'unsicher' "
+        "(Freigabe N)." % (sicher, len(vorschlaege) - sicher))
+    log("Prüfe die Zuordnungsliste (Freigabe J/N, ggf. OKS_Tausch), trage ihren Pfad in Position 11 ein "
+        "und starte mit Trockenlauf = false (Lauf 2).")
+
+    raum_je_oks = {v.stempel.oks: v.raum["id"] for v in vorschlaege}
+    oks_je_raum = {v.raum["id"]: v.stempel.oks for v in vorschlaege}
+    raeume_blatt = [{"id": r["id"], "ebene": r["ebene"], "nummer": r["nummer"], "name": r["name"],
+                     "flaeche": round(r["flaeche"], 2), "platziert": r["platziert"],
+                     "oks_aktuell": _param_text(r["element"], PARAM_OKS)} for r in raeume_info]
+    zusatz = {"stempel": baue_stempel_zeilen(stempel_liste, ebene_von_code, raum_je_oks),
+              "raeume": baue_raeume_zeilen(raeume_blatt, oks_je_raum)}
+    return [zuordnungszeile(v) for v in vorschlaege], zusatz
+
+
+def _lese_stempel(cfg, log, pruef):
+    """Alle Stempeldateien des Ordners lesen; externe Referenzen und Doppelte entfernen."""
+    if not cfg.ordner or not os.path.isdir(cfg.ordner):
+        raise ValueError("Ordner mit CSV-Dateien nicht gefunden: '%s'" % cfg.ordner)
     ignoriert_codes = {}
-    stempel, mel = lese_stempel_ordner(ordner, ausschluss_suffix, ignoriert_codes)
+    stempel, mel = lese_stempel_ordner(cfg.ordner, cfg.ausschluss_suffix, ignoriert_codes)
     for m in mel:
         log("Hinweis: " + m)
         pruef("Einlesen", detail=m)
@@ -1341,15 +1423,14 @@ def _haupt(eingaben, log):
                "nicht verarbeitet" % (code, ignoriert_codes[code]))
         log("WARNUNG: " + msg)
         pruef("Ebene nicht verarbeitet", ebene=code or "", detail=msg)
-    log("%d Stempel aus %s gelesen." % (len(stempel), ordner))
+    log("%d Stempel aus %s gelesen." % (len(stempel), cfg.ordner))
 
     # doppelte OKS: identische Kopien reduzieren, widersprüchliche nicht verarbeiten
     stempel_liste, identisch, konflikte = bereinige_doppelte(stempel)
     if identisch:
         quellen = sorted({x.quelle for x in identisch})
         log("Hinweis: %d identische Stempel mehrfach vorhanden (CSV-Dateien: %s) - je einmal verwendet. "
-            "Tipp: Nicht benötigte CSV-Dateien aus dem Ordner nehmen."
-            % (len(identisch), ", ".join(quellen)))
+            "Tipp: Nicht benötigte CSV-Dateien aus dem Ordner nehmen." % (len(identisch), ", ".join(quellen)))
         pruef("Doppelte OKS (identisch)", detail="%d identische Kopien entfernt (%s)"
               % (len(identisch), ", ".join(quellen)))
     for oks, g in konflikte.items():
@@ -1360,206 +1441,309 @@ def _haupt(eingaben, log):
     if konflikte:
         log("ACHTUNG: %d OKS kommen mit widersprüchlichen Werten mehrfach vor - nicht verarbeitet."
             % len(konflikte))
+    return stempel_liste
 
-    # --- Revit-Räume (nur Phase) ---------------------------------------------
-    raeume_info, phasen, raum_fehler = _sammle_raeume(doc, DB, phase_name)
+
+def _lese_raeume(rv, cfg, log, pruef):
+    """Räume der Phase und Ebenen lesen. Gibt (raeume_info, alle_ebenen, raeume_je_ebene) zurück."""
+    raeume_info, phasen, raum_fehler = _sammle_raeume(rv, cfg.phase_name)
     if raum_fehler:
         log("WARNUNG: %d Räume konnten nicht gelesen werden und fehlen in der Auswertung, z. B.: %s"
             % (len(raum_fehler), "; ".join(raum_fehler[:3])))
         pruef("Räume nicht lesbar", detail="%d Räume, z. B. %s" % (len(raum_fehler), "; ".join(raum_fehler[:3])))
-    if phase_name.lower() not in [p.lower() for p in phasen]:
+    if cfg.phase_name.lower() not in [p.lower() for p in phasen]:
         raise ValueError("Phase '%s' nicht im Projekt. Vorhandene Phasen: %s"
-                         % (phase_name, ", ".join(phasen)))
-    alle_ebenen = [_elementname(l) for l in DB.FilteredElementCollector(doc).OfClass(DB.Level)]
+                         % (cfg.phase_name, ", ".join(phasen)))
+    alle_ebenen = [_elementname(l) for l in rv.DB.FilteredElementCollector(rv.doc).OfClass(rv.DB.Level)]
     raeume_je_ebene = {}
     for r in raeume_info:
         if r["platziert"]:
             raeume_je_ebene[r["ebene"]] = raeume_je_ebene.get(r["ebene"], 0) + 1
     log("%d platzierte Räume der Phase '%s' in %d Ebenen." %
-        (sum(raeume_je_ebene.values()), phase_name, len(raeume_je_ebene)))
+        (sum(raeume_je_ebene.values()), cfg.phase_name, len(raeume_je_ebene)))
+    return raeume_info, alle_ebenen, raeume_je_ebene
 
-    # --- Ebenen --------------------------------------------------------------
+
+def _bestimme_ebenen(cfg, stempel_liste, alle_ebenen, raeume_je_ebene, log, pruef):
+    """Welche Geschosscodes dürfen verarbeitet werden? Gibt {Code: Revit-Ebenenname} zurück."""
     codes_anzahl = {}
     for s in stempel_liste:
         codes_anzahl[s.code] = codes_anzahl.get(s.code, 0) + 1
-    ebenen_bericht = pruefe_ebenen(codes_anzahl, ebenen_zuordnung, alle_ebenen, raeume_je_ebene)
+    bericht = pruefe_ebenen(codes_anzahl, cfg.ebenen_zuordnung, alle_ebenen, raeume_je_ebene)
     log.kopf("Ebenen")
     ebene_von_code = {}
-    for e in ebenen_bericht:
+    for e in bericht:
         log("%s -> %s : %d Stempel, %s" % (e["code"], e["ebene"] or "-", e["anzahl"], e["status"]))
         if e["ok"]:
             ebene_von_code[e["code"]] = e["ebene"]
         else:
             pruef("Ebene nicht verarbeitet", ebene=e["code"] or "", detail="%d Stempel: %s"
                   % (e["anzahl"], e["status"]))
+    return ebene_von_code
 
-    # --- Zuordnung je Ebene ---------------------------------------------------
-    zuordnungsliste = []
-    gesamt_treffer = gesamt_stempel = 0
-    jobs = []           # zu schreibende Zuordnungen
-    anzahl_neu_kandidaten = []
 
-    for code, ebene in sorted(ebene_von_code.items()):
-        st_ebene = [s for s in stempel_liste if s.code == code]
-        raeume_ebene = [r for r in raeume_info if r["ebene"] == ebene and r["platziert"]]
-        log.kopf("Ebene %s (%s): %d Stempel, %d Räume" % (ebene, code, len(st_ebene), len(raeume_ebene)))
+def _ordne_ebene_zu(rv, cfg, code, ebene, stempel_liste, raeume_info, verknuepfungen, log, pruef):
+    """Stempel einer Ebene den Räumen zuordnen. Gibt (vorschlaege, n_treffer, n_stempel) zurück."""
+    DB = rv.DB
+    st_ebene = [s for s in stempel_liste if s.code == code]
+    raeume_ebene = [r for r in raeume_info if r["ebene"] == ebene and r["platziert"]]
+    log.kopf("Ebene %s (%s): %d Stempel, %d Räume" % (ebene, code, len(st_ebene), len(raeume_ebene)))
 
-        trafo = _finde_trafo(doc, DB, st_ebene, ebene, manuelle_links, ausschluss_suffix, log, pruef)
-        if trafo is None:
-            for s in st_ebene:
-                pruef("Stempel ohne Raum", ebene=ebene, oks=s.oks, nummer=s.nummer, name=s.name,
-                      detail="Keine DWG-Verknüpfung für die Koordinaten gefunden")
-            continue
-        ebenenhoehe = raeume_ebene[0]["ebenenhoehe"]
-        z_pruef = pruefpunkt_hoehe_fuss(ebenenhoehe)
-
-        punkte = {}
-        for i, s in enumerate(st_ebene):
-            x, y, _z = dwg_nach_revit(s.punkt_x, s.punkt_y, einheit, trafo)
-            punkte[i] = (x, y)
-        _plausibilitaet(trafo, punkte, log, pruef, ebene)
-
-        treffer = {}
-        punkt_fehler = []
-        for i, (x, y) in punkte.items():
-            p = DB.XYZ(x, y, z_pruef)
-            treffer[i] = []
-            for r in raeume_ebene:
-                try:
-                    if r["element"].IsPointInRoom(p):
-                        treffer[i].append(r["id"])
-                except Exception as ex:
-                    punkt_fehler.append("Raum %s: %s" % (r["id"], ex))
-        if punkt_fehler:
-            log("WARNUNG: IsPointInRoom schlug %d-mal fehl, z. B.: %s" % (len(punkt_fehler), punkt_fehler[0]))
-            pruef("Punkt-in-Raum", ebene=ebene, detail="%d Fehler, z. B. %s" % (len(punkt_fehler), punkt_fehler[0]))
-        n_treffer = len([i for i, t in treffer.items() if t])
-        gesamt_treffer += n_treffer
-        gesamt_stempel += len(st_ebene)
-        log("Trefferquote Punkt-in-Raum: %d von %d Stempeln liegen in einem Raum." %
-            (n_treffer, len(st_ebene)))
-        if st_ebene and n_treffer < 0.6 * len(st_ebene):
-            log("WARNUNG: niedrige Trefferquote - Versatz der Verknüpfung oder falsche Einheit prüfen!")
-
-        raeume_dict = {r["id"]: {"flaeche": r["flaeche"], "pos": r["pos"]} for r in raeume_ebene}
-        erg = ordne_zu(st_ebene, raeume_dict, treffer, positionen=punkte,
-                       tol_sicher=tol_sicher, tol_max=tol_max,
-                       max_abstand=max_abstand_m / METER_JE_FUSS)
-        raum_nach_id = {r["id"]: r for r in raeume_ebene}
-        for z in erg["zuordnungen"]:
-            s, r = st_ebene[z.stempel_idx], raum_nach_id[z.raum_id]
-            zuordnungsliste.append({
-                "Ebene": ebene, "OKS": s.oks, "Stempel_Nummer": s.nummer,
-                "Stempel_Name": s.name, "Stempel_Flaeche": s.flaeche,
-                "Raum_ID": r["id"], "Raum_Nummer_alt": r["nummer"],
-                "Raum_Name_alt": r["name"], "Raum_Flaeche": round(r["flaeche"], 2),
-                "Abweichung_Prozent": None if z.abweichung is None else round(z.abweichung, 1),
-                "Methode": z.methode, "Status": z.status,
-                "Freigabe": "J" if z.status == "sicher" else "N", "Bemerkung": z.bemerkung})
-            jobs.append((s, r, z, ebene))
-            if z.abweichung is not None and z.abweichung >= 5.0:
-                pruef("Flächenabweichung", ebene=ebene, oks=s.oks, nummer=s.nummer, name=s.name,
-                      raum_id=r["id"], detail="Stempel %.2f m2, Revit %.2f m2 (%.1f %%) - nur Vergleich"
-                      % (s.flaeche, r["flaeche"], z.abweichung))
-            if z.status == "unsicher":
-                pruef("Unsichere Zuordnung", ebene=ebene, oks=s.oks, nummer=s.nummer, name=s.name,
-                      raum_id=r["id"], detail=z.bemerkung)
-        for si in erg["stempel_ohne_raum"]:
-            s = st_ebene[si]
+    trafo = _finde_trafo(rv, verknuepfungen, st_ebene, ebene, cfg, log)
+    if trafo is None:
+        for s in st_ebene:
             pruef("Stempel ohne Raum", ebene=ebene, oks=s.oks, nummer=s.nummer, name=s.name,
-                  detail="Punkt in Raum: %s" % ("ja, Raum bereits anderem Stempel zugeordnet"
-                                                if treffer.get(si) else "nein"))
-            if not treffer.get(si):
-                anzahl_neu_kandidaten.append((s, ebene, punkte[si]))
-        for rid in erg["raeume_ohne_stempel"]:
-            r = raum_nach_id[rid]
-            pruef("Raum ohne Stempel", ebene=ebene, nummer=r["nummer"], name=r["name"], raum_id=rid,
-                  detail="%.2f m2" % r["flaeche"])
-        for rid, sis in erg["raeume_mehrfach"].items():
-            r = raum_nach_id[rid]
-            pruef("Raum mit mehreren Stempeln", ebene=ebene, nummer=r["nummer"], name=r["name"],
-                  raum_id=rid, detail="%d Stempel: %s" % (len(sis), ", ".join(st_ebene[i].oks for i in sis)))
-        log("Zugeordnet: %d (sicher: %d, unsicher: %d) | Stempel ohne Raum: %d | Räume ohne Stempel: %d"
-            % (len(erg["zuordnungen"]), len([z for z in erg["zuordnungen"] if z.status == "sicher"]),
-               len([z for z in erg["zuordnungen"] if z.status == "unsicher"]),
-               len(erg["stempel_ohne_raum"]), len(erg["raeume_ohne_stempel"])))
-        # Räume ohne Stempel auch anderer Ebenen werden oben je Ebene gemeldet.
+                  detail="Keine DWG-Verknüpfung für die Koordinaten gefunden")
+        return [], 0, 0
+    z_pruef = pruefpunkt_hoehe_fuss(raeume_ebene[0]["ebenenhoehe"])
 
-    if gesamt_stempel:
-        log.kopf("Gesamt-Trefferquote")
-        log("%d von %d Stempeln wurden per Punkt-in-Raum in einem Raum gefunden." %
-            (gesamt_treffer, gesamt_stempel))
+    punkte = {}
+    for i, s in enumerate(st_ebene):
+        x, y, _z = dwg_nach_revit(s.x, s.y, cfg.einheit, trafo)
+        punkte[i] = (x, y)
+    _plausibilitaet(trafo, punkte, log, pruef, ebene)
 
-    # --- Nummern prüfen --------------------------------------------------------
+    treffer, punkt_fehler = {}, []
+    for i, (x, y) in punkte.items():
+        p = DB.XYZ(x, y, z_pruef)
+        treffer[i] = []
+        for r in raeume_ebene:
+            try:
+                if r["element"].IsPointInRoom(p):
+                    treffer[i].append(r["id"])
+            except Exception as ex:
+                punkt_fehler.append("Raum %s: %s" % (r["id"], ex))
+    if punkt_fehler:
+        log("WARNUNG: IsPointInRoom schlug %d-mal fehl, z. B.: %s" % (len(punkt_fehler), punkt_fehler[0]))
+        pruef("Punkt-in-Raum", ebene=ebene, detail="%d Fehler, z. B. %s" % (len(punkt_fehler), punkt_fehler[0]))
+    n_treffer = len([i for i, t in treffer.items() if t])
+    log("Trefferquote Punkt-in-Raum: %d von %d Stempeln liegen in einem Raum." % (n_treffer, len(st_ebene)))
+    if st_ebene and n_treffer < 0.6 * len(st_ebene):
+        log("WARNUNG: niedrige Trefferquote - Versatz der Verknüpfung oder falsche Einheit prüfen!")
+
+    raeume_dict = {r["id"]: {"flaeche": r["flaeche"], "pos": r["pos"]} for r in raeume_ebene}
+    erg = ordne_zu(st_ebene, raeume_dict, treffer, positionen=punkte, tol_sicher=cfg.tol_sicher,
+                   tol_max=cfg.tol_max, max_abstand=cfg.max_abstand_m / METER_JE_FUSS)
+    raum_nach_id = {r["id"]: r for r in raeume_ebene}
+    vorschlaege = []
+    for z in erg["zuordnungen"]:
+        s, r = st_ebene[z.stempel_idx], raum_nach_id[z.raum_id]
+        vorschlaege.append(Vorschlag(s, r, z, ebene))
+        if z.abweichung is not None and z.abweichung >= 5.0:
+            pruef("Flächenabweichung", ebene=ebene, oks=s.oks, nummer=s.nummer, name=s.name,
+                  raum_id=r["id"], detail="Stempel %.2f m2, Revit %.2f m2 (%.1f %%) - nur Vergleich"
+                  % (s.flaeche, r["flaeche"], z.abweichung))
+        if z.status == "unsicher":
+            pruef("Unsichere Zuordnung", ebene=ebene, oks=s.oks, nummer=s.nummer, name=s.name,
+                  raum_id=r["id"], detail=z.bemerkung)
+    for si in erg["stempel_ohne_raum"]:
+        s = st_ebene[si]
+        pruef("Stempel ohne Raum", ebene=ebene, oks=s.oks, nummer=s.nummer, name=s.name,
+              detail="Punkt in Raum: %s" % ("ja, Raum bereits anderem Stempel zugeordnet"
+                                            if treffer.get(si) else "nein"))
+    for rid in erg["raeume_ohne_stempel"]:
+        r = raum_nach_id[rid]
+        pruef("Raum ohne Stempel", ebene=ebene, nummer=r["nummer"], name=r["name"], raum_id=rid,
+              detail="%.2f m2" % r["flaeche"])
+    for rid, sis in erg["raeume_mehrfach"].items():
+        r = raum_nach_id[rid]
+        pruef("Raum mit mehreren Stempeln", ebene=ebene, nummer=r["nummer"], name=r["name"],
+              raum_id=rid, detail="%d Stempel: %s" % (len(sis), ", ".join(st_ebene[i].oks for i in sis)))
+    log("Zugeordnet: %d (sicher: %d, unsicher: %d) | Stempel ohne Raum: %d | Räume ohne Stempel: %d"
+        % (len(erg["zuordnungen"]), len([z for z in erg["zuordnungen"] if z.status == "sicher"]),
+           len([z for z in erg["zuordnungen"] if z.status == "unsicher"]),
+           len(erg["stempel_ohne_raum"]), len(erg["raeume_ohne_stempel"])))
+    return vorschlaege, n_treffer, len(st_ebene)
+
+
+def _pruefe_nummern(vorschlaege, stempel_liste, raeume_info, log, pruef):
+    """Information in Lauf 1: sind die gekürzten Nummern eindeutig (auch gegenüber anderen Räumen)?"""
     log.kopf("Raumnummern (gekürzt)")
     nummern = {}
-    for s, r, z, ebene in jobs:
-        n, fehler = kurz_nummer(s.oks)
+    for v in vorschlaege:
+        n, fehler = kurz_nummer(v.stempel.oks)
         if fehler:
-            pruef("Nummer zu kurz/ungültig", ebene=ebene, oks=s.oks, raum_id=r["id"], detail=fehler)
+            pruef("Nummer zu kurz/ungültig", ebene=v.ebene, oks=v.stempel.oks, raum_id=v.raum["id"], detail=fehler)
             log("Hinweis: " + fehler)
         else:
-            nummern[s.oks] = n
-    # auch alle Stempel ohne Zuordnung auf Eindeutigkeit prüfen
-    for s in stempel_liste:
+            nummern[v.stempel.oks] = n
+    for s in stempel_liste:                     # auch Stempel ohne Zuordnung prüfen
         if s.oks not in nummern:
             n, fehler = kurz_nummer(s.oks)
             if not fehler:
                 nummern[s.oks] = n
     doppelte_nr = finde_doppelte(nummern)
-    gesperrte_nr = set()
     for nr, okslist in doppelte_nr.items():
-        gesperrte_nr.add(nr)
         pruef("Doppelte Nummer", oks=", ".join(sorted(okslist)), nummer=nr,
               detail="Gekürzte Nummer nicht eindeutig - wird nicht geschrieben")
         log("Doppelte gekürzte Nummer %s: %s" % (nr, ", ".join(sorted(okslist))))
-    ziel_raeume = {r["id"] for _, r, _, _ in jobs}
+    ziel_raeume = {v.raum["id"] for v in vorschlaege}
     fremd_nr = {r["nummer"]: r for r in raeume_info if r["id"] not in ziel_raeume and r["nummer"]}
-    for nr in set(nummern.values()):
-        if nr in fremd_nr:
-            gesperrte_nr.add(nr)
-            pruef("Doppelte Nummer", nummer=nr, raum_id=fremd_nr[nr]["id"],
-                  detail="Nummer ist im Projekt bereits an einem anderen Raum vergeben")
-            log("Nummer %s ist im Projekt schon an Raum %s vergeben." % (nr, fremd_nr[nr]["id"]))
-    if not doppelte_nr and not (set(nummern.values()) & set(fremd_nr)):
+    belegt = sorted(set(nummern.values()) & set(fremd_nr))
+    for nr in belegt:
+        pruef("Doppelte Nummer", nummer=nr, raum_id=fremd_nr[nr]["id"],
+              detail="Nummer ist im Projekt bereits an einem anderen Raum vergeben")
+        log("Nummer %s ist im Projekt schon an Raum %s vergeben." % (nr, fremd_nr[nr]["id"]))
+    if not doppelte_nr and not belegt:
         log("Alle gekürzten Nummern sind eindeutig.")
 
-    # --- Schreiben ---------------------------------------------------------------
-    freigegeben = [(s, r, z, e) for s, r, z, e in jobs if z.status == "sicher"]
-    log.kopf("Schreiben")
-    if trockenlauf:
-        log("Trockenlauf: %d Zuordnungen wären freigegeben (Status 'sicher'), %d unsicher. "
-            "Es wurde NICHTS geschrieben." % (len(freigegeben), len(jobs) - len(freigegeben)))
-        log("Prüfe die Zuordnungsliste, setze Freigabe auf J/N und starte mit Trockenlauf = False "
-            "und dem Pfad der Liste (Eingabe 11).")
+
+# --- Lauf 2: Schreiben aus der geprüften Liste ------------------------------------------------
+def _lauf2(rv, cfg, params_ok, log, pruef):
+    """Schreibt die freigegebenen Zeilen der Zuordnungsliste (Excel oder CSV) in die Räume."""
+    stempel_nach_oks = _lese_stempeldaten(cfg, log)
+    zeilen, mel = lese_zuordnungsliste(cfg.liste_pfad)
+    for m in mel:
+        log("Hinweis: " + m)
+        pruef("Zuordnungsliste", detail=m)
+    freigegeben = [z for z in zeilen if z["_freigabe"]]
+    log("Zuordnungsliste: %d Zeilen, %d freigegeben." % (len(zeilen), len(freigegeben)))
+    mit_tausch = [z for z in zeilen if zelle_text(z.get("OKS_Tausch", ""))]
+    if mit_tausch:
+        log("%d Zeilen mit OKS_Tausch (gilt statt der Spalte OKS), davon %d freigegeben."
+            % (len(mit_tausch), len([z for z in mit_tausch if z["_freigabe"]])))
+        for z in mit_tausch:
+            if not z["_freigabe"]:
+                log("Hinweis: Raum %s hat OKS_Tausch '%s', aber Freigabe ist nicht J - nicht geschrieben."
+                    % (z["Raum_ID"], zelle_text(z.get("OKS_Tausch", ""))))
+
+    auftraege = _baue_auftraege(rv, cfg, freigegeben, stempel_nach_oks, log, pruef)
+    auftraege = _entferne_konflikte(rv, cfg, auftraege, log, pruef)
+    if cfg.trockenlauf:
+        log("Trockenlauf: %d Räume würden beschrieben. Nichts geschrieben." % len(auftraege))
     elif not params_ok:
-        log("Parameter %s / %s fehlen - es wird nichts geschrieben." % (PARAM_OKS, PARAM_NUMMER_TEXT))
+        log("Parameter %s / %s fehlen - nichts geschrieben." % (PARAM_OKS, PARAM_NUMMER_TEXT))
     else:
-        auftraege = []
-        for s, r, z, e in freigegeben:
-            werte, _fehler = schreibvorgaben(s, praefix)
-            if werte["nummer"] in gesperrte_nr:
-                werte["nummer"] = None
-            auftraege.append((r, werte, e, s))
-        _schreibe(doc, DB, TransactionManager, auftraege, log, pruef)
-        if raeume_anlegen:
-            _lege_raeume_an(doc, DB, TransactionManager, anzahl_neu_kandidaten, praefix, log, pruef)
-    if raeume_anlegen and trockenlauf:
-        log("Raumanlage: %d Stempel ohne Raum wären Kandidaten (nur ohne Treffer, geschlossene "
-            "Umgrenzung nötig)." % len(anzahl_neu_kandidaten))
-
-    # Zusatzblätter für die Nacharbeit: alle Stempel und alle Räume mit Status
-    raum_je_oks = {s.oks: r["id"] for s, r, _z, _e in jobs}
-    oks_je_raum = {r["id"]: s.oks for s, r, _z, _e in jobs}
-    raeume_blatt = [{"id": r["id"], "ebene": r["ebene"], "nummer": r["nummer"], "name": r["name"],
-                     "flaeche": round(r["flaeche"], 2), "platziert": r["platziert"],
-                     "oks_aktuell": _param_text(r["element"], PARAM_OKS)} for r in raeume_info]
-    zusatz = {"stempel": baue_stempel_zeilen(stempel_liste, ebene_von_code, raum_je_oks),
-              "raeume": baue_raeume_zeilen(raeume_blatt, oks_je_raum)}
-    _ausgabe_listen(ausgabe, zeit, zuordnungsliste, pruefliste, log, formate, zusatz)
+        _schreibe(rv, auftraege, log, pruef)
 
 
-# --- Revit-Hilfsfunktionen ---------------------------------------------------
+def _lese_stempeldaten(cfg, log):
+    """Name und Nummer der Stempel kommen aus den ORIGINAL-Stempeldateien, nicht aus der Liste."""
+    if not cfg.ordner or not os.path.isdir(cfg.ordner):
+        log("Hinweis: CSV-Ordner nicht gefunden - Name und Nummer werden aus der Liste gelesen.")
+        return {}
+    st, _mel = lese_stempel_ordner(cfg.ordner, cfg.ausschluss_suffix)
+    eindeutig, _identisch, konflikte = bereinige_doppelte(st)
+    log("Stempel aus %s gelesen: %d (Name und Nummer kommen aus den CSV-Dateien)." % (cfg.ordner, len(st)))
+    for oks in konflikte:
+        log("Hinweis: OKS %s mit widersprüchlichen Werten in den CSV-Dateien - Rückfall auf die Liste." % oks)
+    return {x.oks: x for x in eindeutig}
+
+
+def _baue_auftraege(rv, cfg, freigegeben, stempel_nach_oks, log, pruef):
+    """Aus den freigegebenen Zeilen Schreibaufträge bauen; ungültige Zeilen werden gemeldet und übersprungen."""
+    doc, DB = rv.doc, rv.DB
+    raum_kategorie = DB.Category.GetCategory(doc, DB.BuiltInCategory.OST_Rooms)
+    auftraege = []
+    for z in freigegeben:
+        raum = doc.GetElement(DB.ElementId(z["Raum_ID"]))
+        if raum is None or raum.Category is None or raum.Category.Id != raum_kategorie.Id:
+            pruef("Raum nicht gefunden", oks=z.get("OKS", ""), raum_id=z["Raum_ID"],
+                  detail="Element existiert nicht oder ist kein Raum")
+            continue
+        s, quelle = stempel_fuer_zeile(z, stempel_nach_oks)
+        if quelle == "fehlt" or (quelle == "liste" and stempel_nach_oks):
+            # OKS bzw. OKS_Tausch steht nicht in den Stempeldaten: nicht mit den alten
+            # Werten der Zeile (Name/Nummer des früheren Stempels) vermischen
+            pruef("OKS nicht in Stempeldaten", oks=s.oks, raum_id=z["Raum_ID"],
+                  detail="Diese OKS steht in keiner Stempeldatei (Tippfehler?) - nicht geschrieben")
+            log("OKS '%s' (Raum %s) steht in keiner Stempeldatei - nicht geschrieben." % (s.oks, z["Raum_ID"]))
+            continue
+        if quelle == "liste":
+            log("Hinweis: OKS %s nicht in den CSV-Dateien, nehme Werte aus der Liste." % s.oks)
+        raum_ebene = _elementname(raum.Level) if getattr(raum, "Level", None) is not None else ""
+        if geschoss_passt(s.oks, raum_ebene, cfg.ebenen_zuordnung) is False:
+            pruef("Geschoss passt nicht", ebene=raum_ebene, oks=s.oks, raum_id=z["Raum_ID"],
+                  detail="Stempel gehört zum Geschoss %s, der Raum liegt auf '%s' - nicht geschrieben"
+                         % (geschosscode(s.oks), raum_ebene))
+            log("OKS %s passt nicht zur Ebene '%s' von Raum %s - nicht geschrieben."
+                % (s.oks, raum_ebene, z["Raum_ID"]))
+            continue
+        werte, fehler = schreibvorgaben(s, cfg.praefix)
+        if fehler:
+            pruef("Nummer zu kurz/ungültig", oks=s.oks, raum_id=z["Raum_ID"], detail=fehler)
+        auftraege.append(Auftrag(z["Raum_ID"], raum, werte, z.get("Ebene", ""), s))
+    return auftraege
+
+
+def _entferne_konflikte(rv, cfg, auftraege, log, pruef):
+    """Verwirft Aufträge, die zu doppelten Werten führen würden (siehe pruefe_schreibkonflikte)."""
+    raeume_info, _phasen, _fehler = _sammle_raeume(rv, cfg.phase_name)
+    raeume_ist = {r["id"]: {"oks": _param_text(r["element"], PARAM_OKS), "nummer": r["nummer"]}
+                  for r in raeume_info}
+    jobs = [{"raum_id": a.raum_id, "oks": a.stempel.oks, "nummer": a.werte["nummer"]} for a in auftraege]
+    konflikte = pruefe_schreibkonflikte(jobs, raeume_ist)
+    ueberspringen = set()
+    for rid, idx in konflikte["mehrfach"].items():
+        ueberspringen.update(idx)
+        oks_liste = ", ".join(jobs[i]["oks"] for i in idx)
+        pruef("Raum mehrfach in der Liste", oks=oks_liste, raum_id=rid,
+              detail="Mehrere freigegebene Stempel für denselben Raum - keiner geschrieben")
+        log("Raum %s steht mehrfach in der Liste (%s) - nicht geschrieben." % (rid, oks_liste))
+    for i, andere in konflikte["oks"].items():
+        ueberspringen.add(i)
+        pruef("OKS bereits an anderem Raum", oks=jobs[i]["oks"], raum_id=jobs[i]["raum_id"],
+              detail="OKS steht danach auch an Raum %s - nicht geschrieben (Wert dort zuerst löschen "
+                     "oder diesen Raum ändern)" % ", ".join(str(a) for a in andere))
+        log("OKS %s steht schon an Raum %s - Zeile für Raum %s nicht geschrieben."
+            % (jobs[i]["oks"], ", ".join(str(a) for a in andere), jobs[i]["raum_id"]))
+    for i, andere in konflikte["nummer"].items():
+        if i in ueberspringen:
+            continue
+        auftraege[i].werte["nummer"] = None
+        pruef("Doppelte Nummer", oks=jobs[i]["oks"], nummer=jobs[i]["nummer"], raum_id=jobs[i]["raum_id"],
+              detail="Nummer ist schon an Raum %s vergeben - Nummer nicht geschrieben"
+                     % ", ".join(str(a) for a in andere))
+    return [a for i, a in enumerate(auftraege) if i not in ueberspringen]
+
+
+def _schreibe(rv, auftraege, log, pruef):
+    """Alle Schreibvorgänge in EINER Transaktion; je Raum abgefangen."""
+    doc, DB = rv.doc, rv.DB
+    rv.TransactionManager.Instance.ForceCloseTransaction()
+    stats = {"geschrieben": 0, "unverändert": 0, "fehler": 0, "gesperrt": 0}
+    t = DB.Transaction(doc, "Raumstempel übertragen")
+    t.Start()
+    try:
+        for a in auftraege:
+            ok, grund = _ist_beschreibbar(rv, a.raum)
+            if not ok:
+                stats["gesperrt"] += 1
+                pruef("Raum nicht beschreibbar", ebene=a.ebene, oks=a.stempel.oks, name=a.stempel.name,
+                      raum_id=a.raum_id, detail=grund)
+                log("Raum %s nicht beschreibbar: %s" % (a.raum_id, grund))
+                continue
+            ziele = [
+                (a.raum.get_Parameter(DB.BuiltInParameter.ROOM_NAME), a.werte["name"], "Name"),
+                (a.raum.LookupParameter(PARAM_OKS), a.werte["oks"], PARAM_OKS),
+                (a.raum.LookupParameter(PARAM_NUMMER_TEXT), a.werte["nummer_text"], PARAM_NUMMER_TEXT),
+                (a.raum.get_Parameter(DB.BuiltInParameter.ROOM_NUMBER), a.werte["nummer"], "Nummer"),
+            ]
+            for param, wert, bez in ziele:
+                if wert is None or (wert == "" and bez == PARAM_NUMMER_TEXT):
+                    continue
+                try:
+                    erg = _setze(param, wert, DB)
+                except Exception as ex:
+                    erg = "Fehler: %s" % ex
+                if erg in ("geschrieben", "unverändert"):
+                    stats[erg] += 1
+                else:
+                    stats["fehler"] += 1
+                    pruef("Schreibfehler", ebene=a.ebene, oks=a.stempel.oks, raum_id=a.raum_id,
+                          detail="%s: %s" % (bez, erg))
+                    log("Raum %s, %s: %s" % (a.raum_id, bez, erg))
+        status = t.Commit()
+        if status != DB.TransactionStatus.Committed:
+            log("WARNUNG: Die Transaktion wurde nicht abgeschlossen (Status %s)." % status)
+    except Exception:
+        t.RollBack()
+        raise
+    log("Geschrieben: %(geschrieben)d Werte, unverändert: %(unverändert)d, "
+        "Fehler: %(fehler)d, gesperrte Räume: %(gesperrt)d" % stats)
+
+
+# --- Revit-Hilfsfunktionen ---------------------------------------------------------------------
 def _elementname(el):
     """Name eines Revit-Elements.
 
@@ -1589,8 +1773,9 @@ def _elementname(el):
     return ""
 
 
-def _sammle_raeume(doc, DB, phase_name):
+def _sammle_raeume(rv, phase_name):
     """Alle Räume der gewünschten Phase. Räume anderer Phasen werden ignoriert."""
+    doc, DB = rv.doc, rv.DB
     phasen = [_elementname(p) for p in doc.Phases]
     ergebnis, fehler = [], []
     sammler = DB.FilteredElementCollector(doc).OfCategory(DB.BuiltInCategory.OST_Rooms) \
@@ -1617,12 +1802,13 @@ def _sammle_raeume(doc, DB, phase_name):
     return ergebnis, phasen, fehler
 
 
-def _sammle_verknuepfungen(doc, DB):
+def _sammle_verknuepfungen(rv):
     """Alle CAD-Instanzen des Modells (verknüpft oder importiert) mit normalisierten Namen.
 
     Gibt (liste, diagnose) zurück. liste: [(name_norm, instanz, verknuepft, rohname)],
     verknüpfte zuerst. Nichts wird still verschluckt: Fehler landen in diagnose.
     """
+    doc, DB = rv.doc, rv.DB
     liste, fehler, n_inst, n_verkn = [], [], 0, 0
     instanzen = []
     try:
@@ -1674,38 +1860,38 @@ def _sammle_verknuepfungen(doc, DB):
                    "weg": weg}
 
 
-def _finde_trafo(doc, DB, stempel_ebene, ebene, manuelle_links, suffix, log, pruef):
+def _finde_trafo(rv, verknuepfungen, stempel_ebene, ebene, cfg, log):
     """Sucht die DWG-Verknüpfung und liefert ihre Transformation.
 
-    Die Stempel kommen aus '<Geschoss>.dwg', in Revit ist '<Geschoss>_Bestand.dwg'
-    verknüpft: gleicher Nullpunkt und gleiche Einheiten, daher wird deren
-    Transformation benutzt (siehe kandidaten_linknamen).
-    Die DWG-Dateien müssen IN REVIT verknüpft sein (Einfügen > CAD verknüpfen);
-    Dateien im Projektordner allein genügen nicht.
+    verknuepfungen: Ergebnis von _sammle_verknuepfungen (einmal je Lauf gelesen).
+    Die Stempel kommen aus '<Geschoss>.dwg', in Revit ist '<Geschoss>_Bestand.dwg' verknüpft:
+    gleicher Nullpunkt und gleiche Einheiten, daher wird deren Transformation benutzt
+    (siehe kandidaten_linknamen). Die DWG-Dateien müssen IN REVIT verknüpft sein
+    (Einfügen > CAD verknüpfen); Dateien im Projektordner allein genügen nicht.
     """
+    doc = rv.doc
+    liste, diag = verknuepfungen
+    suffix = cfg.ausschluss_suffix
     dateinamen = [s.dateiname for s in stempel_ebene if s.dateiname]
-    verknuepfungen, diag = _sammle_verknuepfungen(doc, DB)
-    name, hinweis = waehle_verknuepfung(dateinamen, [n for n, _i, _v, _r in verknuepfungen],
-                                        suffix, manuelle_links)
-    gefunden = []
-    seen = set()
-    for nm, i_, _v, _r in verknuepfungen:
-        if name is not None and nm == norm_dwgname(name) and _eid(i_.Id) not in seen:
-            seen.add(_eid(i_.Id))
-            gefunden.append(i_)
+    name, hinweis = waehle_verknuepfung(dateinamen, [r for _n, _i, _v, r in liste], suffix, cfg.manuelle_links)
+    gefunden, gesehen = [], set()
+    for nm, inst, _v, _r in liste:
+        if name is not None and nm == norm_dwgname(name) and _eid(inst.Id) not in gesehen:
+            gesehen.add(_eid(inst.Id))
+            gefunden.append(inst)
     if hinweis:
         log("Hinweis: " + hinweis)
     if not gefunden:
-        eindeutig = {_eid(i_.Id): n for n, i_, _v, _r in verknuepfungen}
+        eindeutig = {_eid(inst.Id): n for n, inst, _v, _r in liste}
         if len(eindeutig) == 1:
-            gefunden = [verknuepfungen[0][1]]
-            log("Keine Namensübereinstimmung, nehme die einzige CAD-Instanz im Modell (%s)." % verknuepfungen[0][3])
+            gefunden = [liste[0][1]]
+            log("Keine Namensübereinstimmung, nehme die einzige CAD-Instanz im Modell (%s)." % liste[0][3])
         else:
             gesucht = ", ".join(sorted({norm_dwgname(d) for d in dateinamen})) or "?"
             log("FEHLER: Keine passende DWG-Verknüpfung zu %s gefunden (gesucht auch mit '%s')." % (gesucht, suffix))
             log("  CAD-Instanzen im Modell: %d (verknüpft: %d, importiert: %d), gefunden über: %s."
                 % (diag["instanzen"], diag["verknuepft"], diag["instanzen"] - diag["verknuepft"], diag["weg"]))
-            log("  Namen: %s" % (", ".join(sorted({r for _n, _i, _v, r in verknuepfungen})) or "keine"))
+            log("  Namen: %s" % (", ".join(sorted({r for _n, _i, _v, r in liste})) or "keine"))
             log("  CAD-Verknüpfungstypen: %s" % (", ".join(sorted(diag["typen"])) or "keine"))
             for f in diag["fehler"][:5]:
                 log("  Fehler beim Lesen: %s" % f)
@@ -1772,7 +1958,8 @@ def _setze(param, wert, DB):
     return "geschrieben"
 
 
-def _ist_beschreibbar(doc, DB, raum):
+def _ist_beschreibbar(rv, raum):
+    doc, DB = rv.doc, rv.DB
     try:
         if doc.IsWorkshared:
             status = DB.WorksharingUtils.GetCheckoutStatus(doc, raum.Id)
@@ -1786,88 +1973,6 @@ def _ist_beschreibbar(doc, DB, raum):
     return True, ""
 
 
-def _schreibe(doc, DB, TransactionManager, auftraege, log, pruef):
-    """Alle Schreibvorgänge in EINER Transaktion; je Raum abgefangen."""
-    TransactionManager.Instance.ForceCloseTransaction()
-    stats = {"geschrieben": 0, "unverändert": 0, "fehler": 0, "gesperrt": 0}
-    t = DB.Transaction(doc, "Raumstempel übertragen")
-    t.Start()
-    try:
-        for raum_info, werte, ebene, s in auftraege:
-            raum = raum_info["element"]
-            ok, grund = _ist_beschreibbar(doc, DB, raum)
-            if not ok:
-                stats["gesperrt"] += 1
-                pruef("Raum nicht beschreibbar", ebene=ebene, oks=s.oks, name=s.name,
-                      raum_id=raum_info["id"], detail=grund)
-                log("Raum %s nicht beschreibbar: %s" % (raum_info["id"], grund))
-                continue
-            ziele = [
-                (raum.get_Parameter(DB.BuiltInParameter.ROOM_NAME), werte["name"], "Name"),
-                (raum.LookupParameter(PARAM_OKS), werte["oks"], PARAM_OKS),
-                (raum.LookupParameter(PARAM_NUMMER_TEXT), werte["nummer_text"], PARAM_NUMMER_TEXT),
-                (raum.get_Parameter(DB.BuiltInParameter.ROOM_NUMBER), werte["nummer"], "Nummer"),
-            ]
-            for param, wert, bez in ziele:
-                if wert is None or (wert == "" and bez == PARAM_NUMMER_TEXT):
-                    continue
-                try:
-                    erg = _setze(param, wert, DB)
-                except Exception as ex:
-                    erg = "Fehler: %s" % ex
-                if erg in ("geschrieben", "unverändert"):
-                    stats[erg] += 1
-                else:
-                    stats["fehler"] += 1
-                    pruef("Schreibfehler", ebene=ebene, oks=s.oks, raum_id=raum_info["id"],
-                          detail="%s: %s" % (bez, erg))
-                    log("Raum %s, %s: %s" % (raum_info["id"], bez, erg))
-        t.Commit()
-    except Exception:
-        t.RollBack()
-        raise
-    log("Geschrieben: %(geschrieben)d Werte, unverändert: %(unverändert)d, "
-        "Fehler: %(fehler)d, gesperrte Räume: %(gesperrt)d" % stats)
-
-
-def _lege_raeume_an(doc, DB, TransactionManager, kandidaten, praefix, log, pruef):
-    """Optional: legt für Stempel ohne Treffer einen Raum an (nur bei geschlossener Umgrenzung)."""
-    if not kandidaten:
-        return
-    TransactionManager.Instance.ForceCloseTransaction()
-    t = DB.Transaction(doc, "Räume anlegen")
-    t.Start()
-    angelegt = 0
-    try:
-        for s, ebene, (x, y) in kandidaten:
-            try:
-                level = [l for l in DB.FilteredElementCollector(doc).OfClass(DB.Level)
-                         if _elementname(l) == ebene][0]
-                raum = doc.Create.NewRoom(level, DB.UV(x, y))
-                if raum is None or raum.Area <= 0:
-                    pruef("Raum nicht angelegt", ebene=ebene, oks=s.oks, name=s.name,
-                          detail="Umgrenzung nicht geschlossen")
-                    continue
-                werte, _ = schreibvorgaben(s, praefix)
-                raum.get_Parameter(DB.BuiltInParameter.ROOM_NAME).Set(werte["name"])
-                for pname, wert in ((PARAM_OKS, werte["oks"]), (PARAM_NUMMER_TEXT, werte["nummer_text"])):
-                    p = raum.LookupParameter(pname)
-                    if p is not None and not p.IsReadOnly:
-                        p.Set(wert)
-                if werte["nummer"]:
-                    raum.get_Parameter(DB.BuiltInParameter.ROOM_NUMBER).Set(werte["nummer"])
-                angelegt += 1
-                pruef("Raum neu angelegt", ebene=ebene, oks=s.oks, name=s.name,
-                      raum_id=_eid(raum.Id), detail="Bitte prüfen")
-            except Exception as ex:
-                pruef("Raum nicht angelegt", ebene=ebene, oks=s.oks, name=s.name, detail=str(ex))
-        t.Commit()
-    except Exception:
-        t.RollBack()
-        raise
-    log("Neu angelegte Räume: %d" % angelegt)
-
-
 def _param_text(el, name):
     """Textwert eines Parameters oder '' (auch wenn der Parameter nicht existiert)."""
     try:
@@ -1875,115 +1980,6 @@ def _param_text(el, name):
         return (p.AsString() or "") if p is not None else ""
     except Exception:
         return ""
-
-
-def _lauf_mit_liste(doc, DB, TransactionManager, liste_pfad, praefix, trockenlauf,
-                    params_ok, ordner, ausschluss_suffix, phase_name, ebenen_zuordnung, log, pruef):
-    """Lauf 2: schreibt die geprüfte Zuordnungsliste (nur Zeilen mit Freigabe).
-
-    Aus der Liste kommen nur OKS -> Raum_ID und Freigabe. Name und Nummer der Stempel
-    werden aus den Original-CSV-Dateien (Eingabe 0) gelesen.
-    """
-    stempel_nach_oks = {}
-    if ordner and os.path.isdir(ordner):
-        st, _mel_csv = lese_stempel_ordner(ordner, ausschluss_suffix)
-        eindeutig, _identisch, konflikte = bereinige_doppelte(st)
-        stempel_nach_oks = {x.oks: x for x in eindeutig}
-        log("Stempel aus %s gelesen: %d (Name und Nummer kommen aus den CSV-Dateien)." % (ordner, len(st)))
-        for oks in konflikte:
-            log("Hinweis: OKS %s mit widersprüchlichen Werten in den CSV-Dateien - Rückfall auf die Liste." % oks)
-    else:
-        log("Hinweis: CSV-Ordner nicht gefunden - Name und Nummer werden aus der Liste gelesen.")
-    zeilen, mel = lese_zuordnungsliste(liste_pfad)
-    for m in mel:
-        log("Hinweis: " + m)
-        pruef("Zuordnungsliste", detail=m)
-    freigegeben = [z for z in zeilen if z["_freigabe"]]
-    log("Zuordnungsliste: %d Zeilen, %d freigegeben." % (len(zeilen), len(freigegeben)))
-    mit_tausch = [z for z in zeilen if zelle_text(z.get("OKS_Tausch", ""))]
-    if mit_tausch:
-        log("%d Zeilen mit OKS_Tausch (gilt statt der Spalte OKS), davon %d freigegeben."
-            % (len(mit_tausch), len([z for z in mit_tausch if z["_freigabe"]])))
-        for z in mit_tausch:
-            if not z["_freigabe"]:
-                log("Hinweis: Raum %s hat OKS_Tausch '%s', aber Freigabe ist nicht J - nicht geschrieben."
-                    % (z["Raum_ID"], zelle_text(z.get("OKS_Tausch", ""))))
-    nummern, auftraege = {}, []
-    for z in freigegeben:
-        raum = doc.GetElement(DB.ElementId(z["Raum_ID"]))
-        if raum is None or raum.Category is None or \
-                raum.Category.Id != DB.Category.GetCategory(doc, DB.BuiltInCategory.OST_Rooms).Id:
-            pruef("Raum nicht gefunden", oks=z.get("OKS", ""), raum_id=z["Raum_ID"],
-                  detail="Element existiert nicht oder ist kein Raum")
-            continue
-        s, quelle = stempel_fuer_zeile(z, stempel_nach_oks)
-        if quelle == "fehlt" or (quelle == "liste" and stempel_nach_oks):
-            # OKS bzw. OKS_Tausch steht nicht in den Stempeldaten: nicht mit den alten
-            # Werten der Zeile (Name/Nummer des früheren Stempels) vermischen
-            pruef("OKS nicht in Stempeldaten", oks=s.oks, raum_id=z["Raum_ID"],
-                  detail="Diese OKS steht in keiner Stempeldatei (Tippfehler?) - nicht geschrieben")
-            log("OKS '%s' (Raum %s) steht in keiner Stempeldatei - nicht geschrieben." % (s.oks, z["Raum_ID"]))
-            continue
-        if quelle == "liste":
-            log("Hinweis: OKS %s nicht in den CSV-Dateien, nehme Werte aus der Liste." % s.oks)
-        raum_ebene = _elementname(raum.Level) if getattr(raum, "Level", None) is not None else ""
-        if geschoss_passt(s.oks, raum_ebene, ebenen_zuordnung) is False:
-            pruef("Geschoss passt nicht", ebene=raum_ebene, oks=s.oks, raum_id=z["Raum_ID"],
-                  detail="Stempel gehört zum Geschoss %s, der Raum liegt auf '%s' - nicht geschrieben"
-                         % (geschosscode(s.oks), raum_ebene))
-            log("OKS %s passt nicht zur Ebene '%s' von Raum %s - nicht geschrieben."
-                % (s.oks, raum_ebene, z["Raum_ID"]))
-            continue
-        werte, fehler = schreibvorgaben(s, praefix)
-        if fehler:
-            pruef("Nummer zu kurz/ungültig", oks=s.oks, raum_id=z["Raum_ID"], detail=fehler)
-        auftraege.append(({"element": raum, "id": z["Raum_ID"]}, werte, z.get("Ebene", ""), s))
-        if werte["nummer"]:
-            nummern[s.oks] = werte["nummer"]
-    doppelt = finde_doppelte(nummern)
-    for nr, okslist in doppelt.items():
-        pruef("Doppelte Nummer", oks=", ".join(okslist), nummer=nr, detail="nicht eindeutig - nicht geschrieben")
-        log("Doppelte gekürzte Nummer %s: %s" % (nr, ", ".join(okslist)))
-    for _r, werte, _e, _s in auftraege:
-        if werte["nummer"] in doppelt:
-            werte["nummer"] = None
-
-    # Konflikte mit dem Ist-Zustand der Räume (z. B. Liste nach einem früheren Lauf 2 geändert)
-    raeume_info, _phasen, _fehler = _sammle_raeume(doc, DB, phase_name)
-    raeume_ist = {r["id"]: {"oks": _param_text(r["element"], PARAM_OKS), "nummer": r["nummer"]}
-                  for r in raeume_info}
-    jobs = [{"raum_id": r["id"], "oks": s.oks, "nummer": werte["nummer"]}
-            for r, werte, _e, s in auftraege]
-    konflikte = pruefe_schreibkonflikte(jobs, raeume_ist)
-    ueberspringen = set()
-    for rid, idx in konflikte["mehrfach"].items():
-        ueberspringen.update(idx)
-        oks_liste = ", ".join(jobs[i]["oks"] for i in idx)
-        pruef("Raum mehrfach in der Liste", oks=oks_liste, raum_id=rid,
-              detail="Mehrere freigegebene Stempel für denselben Raum - keiner geschrieben")
-        log("Raum %s steht mehrfach in der Liste (%s) - nicht geschrieben." % (rid, oks_liste))
-    for i, andere in konflikte["oks"].items():
-        ueberspringen.add(i)
-        pruef("OKS bereits an anderem Raum", oks=jobs[i]["oks"], raum_id=jobs[i]["raum_id"],
-              detail="OKS steht danach auch an Raum %s - nicht geschrieben (Wert dort zuerst löschen "
-                     "oder diesen Raum ändern)" % ", ".join(str(a) for a in andere))
-        log("OKS %s steht schon an Raum %s - Zeile für Raum %s nicht geschrieben."
-            % (jobs[i]["oks"], ", ".join(str(a) for a in andere), jobs[i]["raum_id"]))
-    for i, andere in konflikte["nummer"].items():
-        if i in ueberspringen:
-            continue
-        auftraege[i][1]["nummer"] = None
-        pruef("Doppelte Nummer", oks=jobs[i]["oks"], nummer=jobs[i]["nummer"], raum_id=jobs[i]["raum_id"],
-              detail="Nummer ist schon an Raum %s vergeben - Nummer nicht geschrieben"
-                     % ", ".join(str(a) for a in andere))
-    auftraege = [a for i, a in enumerate(auftraege) if i not in ueberspringen]
-
-    if trockenlauf:
-        log("Trockenlauf: %d Räume würden beschrieben. Nichts geschrieben." % len(auftraege))
-    elif not params_ok:
-        log("Parameter %s / %s fehlen - nichts geschrieben." % (PARAM_OKS, PARAM_NUMMER_TEXT))
-    else:
-        _schreibe(doc, DB, TransactionManager, auftraege, log, pruef)
 
 
 def _schreibe_liste_geprueft(ausgabe, name, schreiber, log):
@@ -2067,19 +2063,21 @@ def _ausgabe_listen(ausgabe, zeit, zuordnungsliste, pruefliste, log, formate=("x
         log("Keine Auffälligkeiten.")
     for kat in sorted(zaehler):
         log("%-30s %d" % (kat, zaehler[kat]))
-        for z in [p for p in pruefliste if p["Kategorie"] == kat][:15]:
+        for z in [p for p in pruefliste if p["Kategorie"] == kat][:5]:
             log("   - %s %s %s %s %s" % (z["Ebene"], z["OKS"], z["Name"],
                                          ("ID " + str(z["Raum_ID"])) if z["Raum_ID"] != "" else "", z["Detail"]))
 
 
-def _stelle_parameter_sicher(doc, app, DB, TransactionManager, sp_datei, ausgabe,
-                             anlegen, log, pruef):
+def _stelle_parameter_sicher(rv, cfg, log, pruef):
     """Prüft RaumOKS/Raumnummer_Text an Räumen; bindet sie bei Bedarf.
 
     Bevorzugt aus der Firmen-Shared-Parameter-Datei (gleiche GUID wie in der
     Firmenvorlage). Nur wenn dort nicht vorhanden/keine Datei: eigene Datei,
     mit deutlichem Hinweis.
     """
+    doc, app, DB, TransactionManager = rv.doc, rv.app, rv.DB, rv.TransactionManager
+    sp_datei, ausgabe = cfg.sp_datei, cfg.ausgabe
+    anlegen = cfg.parameter_anlegen and not cfg.trockenlauf
     log.kopf("Parameter")
     raum_kat = doc.Settings.Categories.get_Item(DB.BuiltInCategory.OST_Rooms)
 
