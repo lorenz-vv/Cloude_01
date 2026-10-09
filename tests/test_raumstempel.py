@@ -634,6 +634,44 @@ class TestXlsx(unittest.TestCase):
             wb.close()
 
 
+class TestModus(unittest.TestCase):
+    LISTE = "U:/x/Zuordnungsliste_1.xlsx"
+
+    def test_lauf1(self):
+        b, f = rs.bestimme_modus(True, "")
+        self.assertIsNone(f)
+        self.assertTrue(b.startswith("LAUF 1"))
+
+    def test_lauf2_schreiben_und_trockenlauf(self):
+        b, f = rs.bestimme_modus(False, self.LISTE)
+        self.assertIsNone(f)
+        self.assertIn("SCHREIBEN", b)
+        b, f = rs.bestimme_modus(True, self.LISTE)
+        self.assertIsNone(f)
+        self.assertIn("nichts geschrieben", b)
+
+    def test_trockenlauf_aus_ohne_liste_bricht_ab(self):
+        """Genau der Fall aus der Praxis: Lauf 2 gestartet, aber Position 11 leer."""
+        b, f = rs.bestimme_modus(False, "")
+        self.assertIn("keine Zuordnungsliste", f)
+        self.assertEqual(b, "")
+
+    def test_direktlauf_nur_mit_raumanlage(self):
+        b, f = rs.bestimme_modus(False, "", raeume_anlegen=True)
+        self.assertIsNone(f)
+        self.assertIn("DIREKTLAUF", b)
+
+    def test_liste_an_falscher_position(self):
+        _b, f = rs.bestimme_modus(False, "", sp_datei=self.LISTE)
+        self.assertIn("Position 10", f)
+        _b, f = rs.bestimme_modus(True, "", ausgabe_eingabe=self.LISTE)
+        self.assertIn("Position 12", f)
+
+    def test_falscher_dateityp_in_position_11(self):
+        _b, f = rs.bestimme_modus(False, "U:/x/Ordner")
+        self.assertIn("Position 11", f)
+
+
 class TestZusatzblaetter(unittest.TestCase):
     def _stempel(self):
         return [rs.Stempel("A-G01-_2", nummer="2.02", name="Flur", flaeche=12.5, x=0, y=0, quelle="a.csv"),

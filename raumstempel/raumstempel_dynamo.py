@@ -1082,6 +1082,37 @@ def lese_zuordnungsliste(pfad):
     return ergebnis, meldungen
 
 
+def bestimme_modus(trockenlauf, liste_pfad, sp_datei="", ausgabe_eingabe="", raeume_anlegen=False):
+    """Welcher Lauf ist das? Gibt (beschreibung, fehlertext) zurück.
+
+    Lauf 1: keine Zuordnungsliste (Position 11), Trockenlauf an: Vorschlag, nichts wird geschrieben.
+    Lauf 2: Zuordnungsliste in Position 11: schreibt die freigegebenen Zeilen (Trockenlauf aus).
+    Ein fehlertext bedeutet: abbrechen, ohne etwas zu schreiben (häufige Verwechslungen).
+    """
+    tabellen = (".xlsx", ".xlsm", ".csv")
+    if liste_pfad:
+        if not liste_pfad.lower().endswith(tabellen):
+            return "", ("Position 11 muss auf die Zuordnungsliste zeigen (.xlsx oder .csv), steht aber: %s"
+                        % liste_pfad)
+        art = "nur Prüfung, es wird nichts geschrieben (Trockenlauf)" if trockenlauf \
+            else "SCHREIBEN der freigegebenen Zeilen (Transaktion)"
+        return "LAUF 2 - Zuordnungsliste %s - %s" % (liste_pfad, art), None
+    if sp_datei.lower().endswith(tabellen):
+        return "", ("In Position 10 (Shared-Parameter-Datei) steht eine Excel-/CSV-Datei. Die Zuordnungsliste "
+                    "gehört in Position 11.")
+    if ausgabe_eingabe.lower().endswith(tabellen):
+        return "", ("In Position 12 (Ausgabeordner) steht eine Excel-/CSV-Datei. Die Zuordnungsliste "
+                    "gehört in Position 11.")
+    if trockenlauf:
+        return "LAUF 1 - Vorschlag (keine Zuordnungsliste in Position 11) - es wird nichts geschrieben", None
+    if raeume_anlegen:
+        return ("DIREKTLAUF ohne Zuordnungsliste: sichere Zuordnungen werden sofort geschrieben, fehlende "
+                "Räume werden angelegt"), None
+    return "", ("Trockenlauf ist AUS, aber in Position 11 steht keine Zuordnungsliste. Es wird nichts "
+                "geschrieben. Lauf 1: Trockenlauf = true. Lauf 2: Pfad der geprüften Zuordnungsliste "
+                "in Position 11 eintragen.")
+
+
 def geschoss_passt(oks, raum_ebene, zuordnung):
     """Gehört der Stempel (über den Geschosscode der OKS) zur Ebene des Raums?
 
@@ -1263,8 +1294,18 @@ def _haupt(eingaben, log):
 
     zeit = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     log.kopf("Raumstempel -> Revit-Räume  (%s)" % zeit)
-    log("Modus: %s" % ("TROCKENLAUF - es wird nichts geschrieben" if trockenlauf
-                       else "SCHREIBEN (Transaktion)"))
+    beschreibung, modus_fehler = bestimme_modus(trockenlauf, liste_pfad, sp_datei,
+                                                str(_eingabe(eingaben, 12, "")), raeume_anlegen)
+    log("Modus: %s" % (beschreibung or "unklar"))
+    log("Eingaben: Ordner=%s | Trockenlauf=%s | Zuordnungsliste=%s" %
+        (ordner or "-", "ja" if trockenlauf else "NEIN", liste_pfad or "-"))
+    if modus_fehler:
+        log("FEHLER: " + modus_fehler)
+        return
+    if liste_pfad and not os.path.isfile(liste_pfad):
+        log("FEHLER: Zuordnungsliste nicht gefunden: %s (Pfad prüfen; Schrägstriche / statt \\ verwenden)"
+            % liste_pfad)
+        return
     log("Phase: %s | Einheit DWG: %s | Schwellen: sicher <= %.1f %%, Vorschlag <= %.1f %%"
         % (phase_name, einheit, tol_sicher, tol_max))
     einheit_in_fuss(einheit)  # prüft die Eingabe früh

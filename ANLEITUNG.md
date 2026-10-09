@@ -223,7 +223,12 @@ müssen alle Eingänge belegt sein; für „leer“ einen Code-Block mit `null;`
    nur bei geänderten Werten (mehrfach ausführbar). Fehlen `RaumOKS`/`Raumnummer_Text`, werden sie
    gebunden – bevorzugt aus der Firmen-Datei (IN[10] bzw. aktuell in Revit eingestellte Datei);
    nur ersatzweise in einer eigenen Datei (deutlicher Hinweis, neue GUID!).
-6. Ohne Liste und mit Trockenlauf = False schreibt das Skript nur Zuordnungen mit Status „sicher“.
+6. **Geschrieben wird nur mit Zuordnungsliste.** Das Protokoll nennt in der Zeile `Modus:` den Lauf:
+   `LAUF 1` (keine Liste, nichts wird geschrieben) oder `LAUF 2` (Liste aus Position 11). Ist der
+   Trockenlauf aus, aber Position 11 leer, bricht das Skript mit einer Fehlermeldung ab und schreibt
+   nichts (sonst würde es nur eine neue Vorschlagsliste erzeugen und deine bearbeitete Liste ignorieren).
+   Dasselbe passiert, wenn der Listenpfad versehentlich in Position 10 oder 12 steht. Nur zusammen mit
+   „Fehlende Räume anlegen“ (Position 2 = true) gibt es noch den Direktlauf ohne Liste.
 
 ### Prüfliste (CSV, mit Element-IDs)
 
