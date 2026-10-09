@@ -47,7 +47,7 @@ Eingaben (IN[...]) - Reihenfolge im Dynamo-Graph
 17  Raumtags verwenden (True/False, Standard True)
 18  Suchradius Raumtag -> Stempel in m                    (Standard 1.5)
 
-Alternativ können alle 17 Werte als EINE Liste an IN[0] übergeben werden
+Alternativ können alle 19 Werte als EINE Liste an IN[0] übergeben werden
 (ein Code-Block-Node, siehe ANLEITUNG.md). Leere Werte ("" oder null) = Standard.
 
 Ausgabe (OUT): Liste von Textzeilen (Protokoll) für einen Watch-Node.
@@ -1950,9 +1950,14 @@ def _sammle_raeume(rv, phase_name):
 
 
 def _sammle_raumtags(rv, log):
-    """Alle Raumtags des Modells: Liste von dict(raum_id, pos=(x, y)) (Position des Tag-Kopfes)."""
+    """Alle Raumtags in Grundrissansichten: Liste von dict(raum_id, pos=(x, y)) (Position des Tag-Kopfes).
+
+    Tags in Schnitten, Ansichten und Legenden werden übersprungen: ihre Koordinaten
+    liegen nicht im Grundriss und würden falsche Treffer erzeugen.
+    """
     doc, DB = rv.doc, rv.DB
-    ergebnis, fehler = [], []
+    ergebnis, fehler, uebersprungen = [], [], 0
+    grundriss = getattr(DB, "ViewPlan", None)
     try:
         sammler = DB.FilteredElementCollector(doc).OfCategory(DB.BuiltInCategory.OST_RoomTags) \
             .WhereElementIsNotElementType()
@@ -1962,14 +1967,20 @@ def _sammle_raumtags(rv, log):
                 kopf = t.TagHeadPosition
                 if raum is None or kopf is None:
                     continue
+                ansicht = getattr(t, "View", None)
+                if grundriss is not None and ansicht is not None and not isinstance(ansicht, grundriss):
+                    uebersprungen += 1
+                    continue
                 ergebnis.append({"raum_id": _eid(raum.Id), "pos": (kopf.X, kopf.Y)})
             except Exception as ex:
                 fehler.append("Tag %s: %s" % (_eid(t.Id), ex))
     except Exception as ex:
         log("WARNUNG: Raumtags konnten nicht gelesen werden: %s" % ex)
         return []
-    log("Raumtags im Modell gelesen: %d%s" % (len(ergebnis), (" (%d nicht lesbar, z. B. %s)"
-                                                              % (len(fehler), fehler[0])) if fehler else ""))
+    log("Raumtags im Modell gelesen: %d%s%s" % (
+        len(ergebnis),
+        " (%d außerhalb von Grundrissen übersprungen)" % uebersprungen if uebersprungen else "",
+        " (%d nicht lesbar, z. B. %s)" % (len(fehler), fehler[0]) if fehler else ""))
     return ergebnis
 
 

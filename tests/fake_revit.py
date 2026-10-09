@@ -185,11 +185,20 @@ class ImportInstance(Element):
         return types.SimpleNamespace(Min=XYZ(x0, y0, 0), Max=XYZ(x1, y1, 10))
 
 
+class ViewPlan(Element):
+    pass
+
+
+class ViewSection(Element):
+    pass
+
+
 class RoomTag(Element):
     """Raumtag: verweist auf einen Raum, kein eigener Raum."""
 
-    def __init__(self, raum, x_m, y_m):
+    def __init__(self, raum, x_m, y_m, ansicht=None):
         Element.__init__(self, "Raumtag")
+        self.View = ansicht or ViewPlan("Grundriss")
         self.Room = raum
         self.TagHeadPosition = XYZ(x_m / M_JE_FUSS, y_m / M_JE_FUSS, 0.0)
 
@@ -380,8 +389,8 @@ class FakeModell(object):
         self.doc.fuege_hinzu(r)
         return r
 
-    def raumtag(self, raum, x_m, y_m):
-        t = RoomTag(raum, x_m, y_m)
+    def raumtag(self, raum, x_m, y_m, ansicht=None):
+        t = RoomTag(raum, x_m, y_m, ansicht)
         self.doc.fuege_hinzu(t)
         return t
 
@@ -410,7 +419,7 @@ class FakeModell(object):
         db = modul("Autodesk.Revit.DB")
         for n, o in dict(ElementId=ElementId, XYZ=XYZ, Element=Element, Level=Level, Category=Category,
                          StorageType=StorageType, BuiltInParameter=BuiltInParameter,
-                         BuiltInCategory=BuiltInCategory, ImportInstance=ImportInstance,
+                         BuiltInCategory=BuiltInCategory, ViewPlan=ViewPlan, ImportInstance=ImportInstance,
                          CADLinkType=CADLinkType, FilteredElementCollector=FilteredElementCollector,
                          Transaction=Transaction, TransactionGroup=TransactionGroup,
                          TransactionStatus=TransactionStatus, WorksharingUtils=WorksharingUtils,

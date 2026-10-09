@@ -63,7 +63,7 @@ das Protokoll „CAD-Instanzen im Modell: 0 …“ bzw. die Namen, die es gefund
   Radius ist Eingabe 18). Das Skript nimmt dann den Raum des **nächstgelegenen Tags** (Methode `Raumtag`);
   das hat Vorrang vor Punkt-in-Raum und Fläche. Status „unsicher“, wenn mehrere Stempel am selben Tag
   liegen oder die Fläche um mehr als die Obergrenze (Eingabe 7) abweicht. Die Prüfliste nennt
-  „Raumtag ohne Stempel“. Es zählen nur Tags von Räumen der Phase „Bestand“ auf der Ebene des Stempels.
+  „Raumtag ohne Stempel“. Es zählen nur Tags von Räumen der Phase „Bestand“ auf der Ebene des Stempels Tags in Schnitten und Ansichten werden ignoriert, nur Grundrisse zählen.
   Eingabe 17 = `false` schaltet das ab.
 * Eingabe 16 (Ausgabeformat): `"xlsx"` (Standard), `"csv"` oder `"beides"`. Die CSV-Variante schreibt
   Nummern als `="1.06"` und Flächen mit Dezimalkomma (öffnet ebenfalls ohne Datumsproblem).

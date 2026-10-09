@@ -167,6 +167,15 @@ class TestRaumtags(AblaufBasis):
         self.assertEqual(z["100049-004-A-G00-_01"]["Methode"], "Raumtag")
         self.assertEqual(int(z["100049-004-A-G00-_03"]["Raum_ID"]), self.th.Id.Value)
 
+    def test_tag_im_schnitt_wird_ignoriert(self):
+        from fake_revit import ViewSection
+        self._stempel_im_nachbarraum()
+        self.modell.raumtag(self.buero, 4.3, 5.2, ansicht=ViewSection("Schnitt 1"))
+        log = self.lauf()
+        self.assertIn("1 außerhalb von Grundrissen übersprungen", log)
+        tab = rs.lese_xlsx(self.liste(), "Zuordnung")
+        self.assertNotIn("Raumtag", [r[tab[0].index("Methode")] for r in tab[1:]])
+
     def test_raumtags_abschaltbar(self):
         self._stempel_im_nachbarraum()
         self.modell.raumtag(self.buero, 4.3, 5.2)
