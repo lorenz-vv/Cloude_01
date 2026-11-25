@@ -152,6 +152,19 @@ class TestDoppelte(unittest.TestCase):
             self.assertEqual((len(liste), len(entfernt), konflikte), (23, 23, {}))
 
 
+class TestDateinameAusOks(unittest.TestCase):
+    def test_ableitung(self):
+        self.assertEqual(rs.dateiname_aus_oks("100044-001-A-G00-_06"), "100044_001_A_G00.dwg")
+        self.assertEqual(rs.dateiname_aus_oks("100044-001-A-U01-_15"), "100044_001_A_U01.dwg")
+        self.assertEqual(rs.dateiname_aus_oks(""), "")
+        self.assertEqual(rs.dateiname_aus_oks("ohne"), "")
+
+    def test_findet_verknuepfung(self):
+        dn = rs.dateiname_aus_oks("100044-001-A-G00-_06")
+        name, _h = rs.waehle_verknuepfung([dn], ["100044_001_A_G00_Bestand.dwg", "100044_001_A_G01_Bestand.dwg"])
+        self.assertEqual(name, "100044_001_A_G00_Bestand.dwg")
+
+
 class TestVerknuepfung(unittest.TestCase):
     """Stempel aus '<G>.dwg', verknüpft ist in Revit '<G>_Bestand.dwg'."""
 

@@ -196,6 +196,17 @@ class TestRaumtags(AblaufBasis):
         return self.th
 
 
+class TestOhneDateiname(AblaufBasis):
+    def test_csv_ohne_dateiname_nutzt_oks(self):
+        with open(os.path.join(self.ordner, "Stempel.csv"), "w", encoding="utf-8-sig", newline="") as f:
+            f.write("Anzahl,Name,FM.FLAECHE,FM.NAME,FM.NUMMER,FM.OKS,Position X,Position Y,Position Z\n")
+            f.write("1,PIT_DOI_GMSH,20.20,Büro,1.01,100049-004-A-G00-_01,%s,2.0,0.0\n" % (2.5 - VERSATZ_M))
+        log = self.lauf()
+        self.assertNotIn("FEHLER", log)
+        self.assertIn("DWG-Name aus der OKS abgeleitet: 100049_004_A_G00.dwg", log)
+        self.assertIn("1 von 1 Stempeln liegen in einem Raum", log)
+
+
 class TestLauf2(AblaufBasis):
     def setUp(self):
         AblaufBasis.setUp(self)

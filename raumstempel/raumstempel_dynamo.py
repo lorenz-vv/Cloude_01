@@ -408,6 +408,17 @@ def norm_dwgname(name):
     return re.sub(r"\.dwg$", "", n)
 
 
+def dateiname_aus_oks(oks):
+    """DWG-Name aus der OKS, falls die CSV keine Spalte "Dateiname" hat.
+
+    '100044-001-A-G00-_06' -> '100044_001_A_G00.dwg' (alle Segmente außer dem letzten).
+    """
+    teile = str(oks or "").strip().split("-")
+    if len(teile) < 2 or not all(teile[:-1]):
+        return ""
+    return "_".join(teile[:-1]) + ".dwg"
+
+
 def kandidaten_linknamen(dateiname, suffix=STANDARD_AUSSCHLUSS_SUFFIX, manuell=None):
     """Namen der Revit-Verknüpfung, die für einen Stempel-Dateinamen infrage kommen.
 
@@ -2055,6 +2066,11 @@ def _finde_trafo(rv, verknuepfungen, stempel_ebene, ebene, cfg, log):
     liste, diag = verknuepfungen
     suffix = cfg.ausschluss_suffix
     dateinamen = [s.dateiname for s in stempel_ebene if s.dateiname]
+    if not dateinamen:         # CSV ohne (gefüllte) Spalte "Dateiname": DWG-Name aus der OKS ableiten
+        dateinamen = [d for d in sorted({dateiname_aus_oks(s.oks) for s in stempel_ebene}) if d]
+        if dateinamen:
+            log("Hinweis: Die CSV hat keinen Dateinamen; DWG-Name aus der OKS abgeleitet: %s"
+                % ", ".join(dateinamen))
     name, hinweis = waehle_verknuepfung(dateinamen, [r for _n, _i, _v, r in liste], suffix, cfg.manuelle_links)
     gefunden, gesehen = [], set()
     for nm, inst, _v, _r in liste:
